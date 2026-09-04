@@ -1,0 +1,34 @@
+# Gradle / Android build output
+build/
+.gradle/
+local.properties
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+.cxx/
+
+# Signing -- never
+*.jks
+*.keystore
+
+# Model files are gigabytes. They live on the phone and in Drive, never in git.
+**/models/
+*.task
+*.tflite
+*.onnx
+*.gguf
+
+# IDE: keep the shared code style, drop everything personal
+.idea/*
+!.idea/codeStyles/
+!.idea/codeStyles/**
+!.idea/inspectionProfiles/
+!.idea/inspectionProfiles/**
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

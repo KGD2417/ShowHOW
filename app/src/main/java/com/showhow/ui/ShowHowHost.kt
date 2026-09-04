@@ -1,0 +1,28 @@
+package com.showhow.ui
+
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
+
+/** The whole navigation graph. A `when`. */
+@OptIn(UnstableApi::class)
+@Composable
+fun ShowHowHost(vm: ShowHowViewModel = viewModel()) {
+    val screen by vm.screen.collectAsStateWithLifecycle()
+
+    Surface(Modifier.fillMaxSize()) {
+        when (val s = screen) {
+            Screen.Library -> LibraryScreen(vm)
+            Screen.Show -> ShowScreen(vm)
+            Screen.Debug -> DebugScreen(vm)
+            is Screen.Review -> ReviewScreen(vm, s.guideId)
+            is Screen.Player -> PlayerScreen(vm, s.guideId)
+        }
+    }
+}
