@@ -151,12 +151,23 @@ data class Policy(
         "keyboard" to listOf("keyboard"),
         "mouse" to listOf("mouse"),
         "screen" to listOf("tv", "laptop"),
-        // Below: what a laptop-repair model would fill in. Empty means the
-        // detector on this phone genuinely cannot find these.
+        // Filled in once a fine-tuned detector replaced the COCO one. These
+        // are the classes it was actually trained on, which is the only thing
+        // that may appear here -- a name with no matching label is a box the
+        // app promises and the model cannot draw.
+        "screwdriver" to listOf("screwdriver"),
+        "screw" to listOf(
+            "philips_screw", "pozidriv_screw", "torx_screw",
+            "hex_screw", "square_screw",
+        ),
+        "philips" to listOf("philips_screw"),
+        "pozidriv" to listOf("pozidriv_screw"),
+        "torx" to listOf("torx_screw"),
+        "hex" to listOf("hex_screw"),
+        "square" to listOf("square_screw"),
+        // Still genuinely absent: no dataset covered these.
         "ram" to emptyList(),
         "ssd" to emptyList(),
-        "screw" to emptyList(),
-        "screwdriver" to emptyList(),
         "heatsink" to emptyList(),
         "battery" to emptyList(),
     ),

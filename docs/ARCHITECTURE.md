@@ -299,3 +299,46 @@ Light.
 R8 is off in release on purpose: it breaks MediaPipe, which stack-walks to load
 its native libraries. All three ML libraries ship their own
 `libc++_shared.so`, hence the `pickFirsts` in `packaging`.
+
+## 12. The fine-tuned detector
+
+The object detector shipped as generic COCO -- eighty everyday classes, none of
+them a tool. On a bench it drew `laptop 0.76` around the laptop, `person 0.77`
+around the hand holding a screwdriver, and nothing at all around the
+screwdriver, because there is no such class and no configuration adds one.
+
+`tools/` holds the three scripts that replaced it. They need a free Roboflow
+key in `~/.roboflow_key`, WSL or Linux, and about half an hour:
+
+```bash
+python3 tools/fetch_screw_datasets.py    # three public COCO exports
+python3 tools/merge_screw_datasets.py    # -> one class list, ~875 train images
+python3 tools/train_detector.py          # -> ~/sd_out/screwdriver.tflite
+```
+
+Model Maker rather than YOLO for one reason: it writes TFLite Model Metadata,
+and MediaPipe's ObjectDetector refuses a model without it. The export therefore
+drops straight over `files/models/object_detector.tflite` with **no app change
+at all** -- the only edit is `componentAliases` in policy.json, which is what
+`ai/ComponentLocator` reads to decide what it can be asked to point at.
+
+Measured on the merged dataset, 30 epochs, one laptop RTX 3060:
+
+| metric | value | what it means |
+|---|---|---|
+| AP@0.50 | 0.635 | does it box the right thing |
+| AP large | 0.668 | a screwdriver held up to the camera |
+| AP small | 0.157 | a screw head in a wide shot -- weak, get closer |
+| load | 18 ms, NPU | on the Snapdragon 8 Elite Gen 5 |
+
+Classes: `screwdriver`, `philips_screw`, `pozidriv_screw`, `torx_screw`,
+`hex_screw`, `square_screw`. `square_screw` had 23 training examples and should
+be treated as untrained.
+
+RAM, SSD, heatsink and battery are **still empty** in `componentAliases`. No
+dataset covered them, so asking still answers "this detector has no label for
+that" rather than borrowing a box from whatever happened to be nearby.
+
+The COCO model it replaced is kept on the phone as
+`files/models/object_detector_coco.tflite`; copying it back over
+`object_detector.tflite` reverts everything.

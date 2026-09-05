@@ -17,8 +17,33 @@ import org.junit.Test
  */
 class ComponentLocatorTest {
 
-    /** What is actually on the phone today: generic COCO. */
-    private val coco = ComponentLocator({ Policy.DEFAULT.componentAliases }, { 0.60f })
+    /**
+     * A phone still carrying the stock COCO detector.
+     *
+     * Spelled out rather than taken from Policy.DEFAULT, because the default
+     * now names the classes of the fine-tuned model that replaced it. This is
+     * what the app does when someone has not pushed that model yet, and it
+     * must still refuse to invent a box.
+     */
+    private val coco = ComponentLocator(
+        {
+            mapOf(
+                "laptop" to listOf("laptop"),
+                "keyboard" to listOf("keyboard"),
+                "mouse" to listOf("mouse"),
+                "screen" to listOf("tv", "laptop"),
+                "ram" to emptyList(),
+                "ssd" to emptyList(),
+                "screw" to emptyList(),
+                "screwdriver" to emptyList(),
+                "heatsink" to emptyList(),
+            )
+        },
+        { 0.60f },
+    )
+
+    /** The shipped configuration, which now expects the fine-tuned detector. */
+    private val shipped = ComponentLocator({ Policy.DEFAULT.componentAliases }, { 0.60f })
 
     /** What a fine-tuned laptop-parts model would look like, config only. */
     private val laptopParts = ComponentLocator(
@@ -101,6 +126,33 @@ class ComponentLocatorTest {
         assertTrue(coco.locate("laptop", frame("laptop" to 0.95f)) is Localization.Found)
         assertTrue(coco.supports("keyboard"))
         assertEquals(setOf("laptop", "keyboard", "mouse", "screen"), coco.vocabulary())
+    }
+
+    @Test
+    fun `the shipped policy now knows screwdrivers and screw heads`() {
+        // What the fine-tune bought. These names exist here only because a
+        // model was actually trained on labels with those names.
+        for (c in listOf("screwdriver", "screw", "philips", "pozidriv", "torx", "hex")) {
+            assertTrue(c, shipped.supports(c))
+        }
+        assertTrue(
+            shipped.locate("screwdriver", frame("screwdriver" to 0.83f)) is Localization.Found,
+        )
+        assertEquals(
+            "philips_screw",
+            (shipped.locate("philips", frame("philips_screw" to 0.77f)) as Localization.Found).label,
+        )
+    }
+
+    @Test
+    fun `the parts no dataset covered are still honestly absent`() {
+        // RAM, SSD and heatsink were not in any dataset that was trained on, so
+        // they stay empty and still answer "no label for that" rather than
+        // borrowing a box from a class that happens to be nearby.
+        for (c in listOf("ram", "ssd", "heatsink", "battery")) {
+            assertFalse(c, shipped.supports(c))
+            assertTrue(c, shipped.locate(c, frame("screwdriver" to 0.9f)) is Localization.Uncertain)
+        }
     }
 
     @Test

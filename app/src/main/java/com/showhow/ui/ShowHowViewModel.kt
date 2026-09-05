@@ -276,8 +276,28 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * Null when the camera is off, which is exactly when there is nothing to
      * look at and the coach should answer from the guide alone.
      */
-    @Volatile
     private var lastFrame: Bitmap? = null
+
+    /**
+     * Guards [lastFrame] against the race that crashed the app.
+     *
+     * The analyzer replaces this bitmap ten times a second and recycles the one
+     * it replaces. A learner's question is answered on another thread, seconds
+     * later, and MediaPipe reads the pixels natively for as long as it is
+     * looking at them -- so the frame handed to the coach was being freed while
+     * the vision encoder was still reading it:
+     *
+     *   Abort message: 'Error, cannot access an invalid/free'd bitmap here!'
+     *
+     * A SIGABRT from native code, so runCatching never saw it and the text-only
+     * fallback never ran. Checking isRecycled before handing it over does not
+     * help either: it is true when checked and false a millisecond later, which
+     * is the definition of this bug rather than a fix for it.
+     *
+     * So the copy is taken under the same lock that does the recycling, and
+     * what the coach gets is a bitmap nothing else has a reference to.
+     */
+    private val frameLock = Any()
 
     private fun keepFrame(frame: Bitmap) {
         val scaled = runCatching {
@@ -285,9 +305,23 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             val h = (frame.height * (w.toFloat() / frame.width)).toInt().coerceAtLeast(1)
             Bitmap.createScaledBitmap(frame, w, h, true)
         }.getOrNull() ?: return
-        val old = lastFrame
-        lastFrame = scaled
-        if (old !== scaled) runCatching { old?.recycle() }
+        synchronized(frameLock) {
+            val old = lastFrame
+            lastFrame = scaled
+            if (old !== scaled) runCatching { old?.recycle() }
+        }
+    }
+
+    /**
+     * A private copy of the current frame for the coach, or null.
+     *
+     * The caller owns it and must recycle it. Taken under [frameLock] so the
+     * analyzer cannot free the source midway through the copy.
+     */
+    private fun frameForCoach(): Bitmap? = synchronized(frameLock) {
+        val f = lastFrame ?: return null
+        if (f.isRecycled) return null
+        runCatching { f.copy(f.config ?: Bitmap.Config.ARGB_8888, false) }.getOrNull()
     }
 
     /** Detector labels from the photograph of the step being watched. */
@@ -1269,14 +1303,19 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 seenNow = _detections.value.boxes.map { it.label },
                 toolWords = policy.value.toolWords,
             )
-            // With the camera on, the coach is handed the frame and can
-            // answer about the thing in the learner's hand -- which kind of
-            // screwdriver it is, whether it matches the screws. The detector
-            // never could: it knows COCO classes and has no label for one.
-            val frame = lastFrame
-            val (evidence, text) =
-                if (frame != null && !frame.isRecycled) coach.see(context, frame)
-                else coach.answer(context)
+            // With the camera on, the coach is handed a private copy of the
+            // frame and can answer about the thing in the learner's hand --
+            // which kind of screwdriver it is, whether it matches the screws.
+            // The detector never could: it knows COCO classes and has no label
+            // for one.
+            val frame = frameForCoach()
+            val (evidence, text) = try {
+                if (frame != null) coach.see(context, frame) else coach.answer(context)
+            } finally {
+                // Ours alone, so freeing it here cannot pull the pixels out
+                // from under anything else.
+                runCatching { frame?.recycle() }
+            }
             if (text.isBlank()) {
                 // No model, or it failed. Say so rather than showing an empty
                 // card that looks like the app hung.
@@ -1507,8 +1546,10 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         motionJob?.cancel()
         policyRepo.stop()
         stopListening()
-        runCatching { lastFrame?.recycle() }
-        lastFrame = null
+        synchronized(frameLock) {
+            runCatching { lastFrame?.recycle() }
+            lastFrame = null
+        }
         runCatching { coach.close() }
         // RELEASE, the last rung of the model ladder. Native memory the GC
         // cannot see.
