@@ -50,6 +50,14 @@ data class Policy(
      */
     val userFarFaceHeightPx: Double = 90.0,
 
+    // --- Object detection (the boxes over the viewfinder) ---
+    /** Below this score a box is not drawn. Every box on screen is a claim. */
+    val detectMinScore: Float = 0.4f,
+
+    // --- Player ---
+    /** How long the Player waits after a step's audio ends before moving on. */
+    val autoAdvanceMs: Long = 2000,
+
     // --- Scene check (advisory: it never disables anything) ---
     /** Below this similarity the Player may say "this doesn't look like the photo". */
     val sceneAdviseMinSimilarity: Float = 0.55f,

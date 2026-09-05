@@ -9,6 +9,7 @@ import java.io.File
  *   guides/<id>/guide.json
  *   guides/<id>/take.wav
  *   guides/<id>/snap0.jpg, snap1.jpg, ...
+ *   guides/<id>/step2.wav                (only if a step was re-recorded)
  *
  * Deliberately plain file IO -- no Room, no DataStore. A guide you can drag
  * from one phone to another with a file manager is the sharing story.
@@ -27,6 +28,9 @@ class GuideStore(private val root: File) {
      * of the take (see core.mapSnapsToSteps). Step.photo carries the name.
      */
     fun snapFile(id: String, snapIndex: Int): File = File(dir(id), "snap$snapIndex.jpg")
+
+    /** Where a re-recorded step's audio lands. Named by step, not by snap. */
+    fun stepAudioFile(id: String, stepIndex: Int): File = File(dir(id), "step$stepIndex.wav")
 
     fun ids(): List<String> =
         root.listFiles { f -> f.isDirectory && File(f, "guide.json").exists() }

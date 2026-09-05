@@ -53,6 +53,7 @@ import java.io.File
 fun ReviewScreen(vm: ShowHowViewModel, guideId: String) {
     val context = LocalContext.current
     val guide by vm.editing.collectAsStateWithLifecycle()
+    val reRecording by vm.reRecording.collectAsStateWithLifecycle()
     val player = remember { ExoPlayer.Builder(context).build() }
 
     DisposableEffect(Unit) { onDispose { player.release() } }
@@ -98,11 +99,14 @@ fun ReviewScreen(vm: ShowHowViewModel, guideId: String) {
                         n = i + 1,
                         step = s,
                         folder = vm.guides.dir(g.id),
+                        recording = reRecording == i,
                         onPlay = {
-                            play(player, vm.guides.takeFile(g.id), s)
+                            play(player, vm.guides.dir(g.id), vm.guides.takeFile(g.id), s)
                         },
                         onSplit = { vm.splitStep(i) },
-                        onReRecord = { vm.go(Screen.Show) },
+                        onReRecord = {
+                            if (reRecording == i) vm.stopReRecord() else vm.startReRecord(i)
+                        },
                     )
                 }
             }
@@ -126,6 +130,7 @@ private fun StepCard(
     n: Int,
     step: Step,
     folder: File,
+    recording: Boolean,
     onPlay: () -> Unit,
     onSplit: () -> Unit,
     onReRecord: () -> Unit,
@@ -154,6 +159,21 @@ private fun StepCard(
                 style = MaterialTheme.typography.bodyLarge,
                 color = Ink.text,
             )
+            if (recording) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Recording this step. Say it again, then tap Stop.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Ink.red,
+                )
+            } else if (step.audio.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "re-recorded",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Ink.green,
+                )
+            }
             if (step.modeHint.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
                 // Advice, never a gate. Every control below still works.
@@ -179,7 +199,12 @@ private fun StepCard(
                 }
                 Row {
                     TextButton(onClick = onSplit) { Text("Split", color = Ink.blue) }
-                    TextButton(onClick = onReRecord) { Text("Re-record", color = Ink.blue) }
+                    TextButton(onClick = onReRecord) {
+                        Text(
+                            if (recording) "Stop" else "Re-record",
+                            color = if (recording) Ink.red else Ink.blue,
+                        )
+                    }
                 }
             }
         }
@@ -238,20 +263,22 @@ private fun JoinDivider(onJoin: () -> Unit) {
     }
 }
 
+/** A re-recorded clip if the step has one, otherwise its slice of the take. */
 @OptIn(UnstableApi::class)
-private fun play(player: ExoPlayer, take: File, step: Step) {
-    if (!take.exists()) return
-    player.setMediaItem(
-        androidx.media3.common.MediaItem.Builder()
-            .setUri(take.toURI().toString())
-            .setClippingConfiguration(
-                androidx.media3.common.MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionMs(step.startMs)
-                    .setEndPositionMs(step.endMs)
-                    .build(),
-            )
-            .build(),
-    )
+private fun play(player: ExoPlayer, folder: File, take: File, step: Step) {
+    val override = if (step.audio.isNotBlank()) File(folder, step.audio) else null
+    val source = override?.takeIf { it.exists() } ?: take
+    if (!source.exists()) return
+    val item = androidx.media3.common.MediaItem.Builder().setUri(source.toURI().toString())
+    if (override == null) {
+        item.setClippingConfiguration(
+            androidx.media3.common.MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(step.startMs)
+                .setEndPositionMs(step.endMs)
+                .build(),
+        )
+    }
+    player.setMediaItem(item.build())
     player.prepare()
     player.play()
 }

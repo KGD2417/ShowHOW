@@ -127,6 +127,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                 // that happened to be current when this collector started.
                 Gesture.THUMB_UP -> playStep(
                     player,
+                    vm.guides.dir(guideId),
                     vm.guides.takeFile(guideId),
                     guide.steps[index.coerceIn(0, guide.steps.lastIndex)],
                 )
@@ -136,7 +137,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     }
 
     LaunchedEffect(step.startMs, guideId) {
-        playStep(player, vm.guides.takeFile(guideId), step)
+        playStep(player, vm.guides.dir(guideId), vm.guides.takeFile(guideId), step)
     }
 
     // Playback position, and the pause after it before the next step.
@@ -152,7 +153,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
             val span = (step.endMs - step.startMs).coerceAtLeast(1)
             progress = (player.currentPosition.toFloat() / span).coerceIn(0f, 1f)
             if (player.playbackState == Player.STATE_ENDED || progress >= 1f) {
-                if (advanceInMs < 0) advanceInMs = ShowHowViewModel.AUTO_ADVANCE_MS
+                if (advanceInMs < 0) advanceInMs = policy.autoAdvanceMs
                 advanceInMs -= 120
                 if (advanceInMs <= 0) {
                     if (index < guide.steps.lastIndex) goTo(index + 1) else advanceInMs = -1L
@@ -271,7 +272,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                     position = "${index + 1} / ${guide.steps.size}",
                     accent = accent,
                     holding = holding,
-                    onAgain = { playStep(player, vm.guides.takeFile(guideId), step) },
+                    onAgain = { playStep(player, vm.guides.dir(guideId), vm.guides.takeFile(guideId), step) },
                     onHold = {
                         holding = !holding
                         if (holding) player.pause() else player.play()
@@ -605,20 +606,25 @@ private fun decode(f: File, sample: Int) = remember(f.path) {
     }
 }
 
+/**
+ * Play one step: its own re-recorded clip if it has one, otherwise the slice of
+ * the original take that belongs to it.
+ */
 @OptIn(UnstableApi::class)
-private fun playStep(player: ExoPlayer, take: File, step: Step) {
-    if (!take.exists()) return
-    player.setMediaItem(
-        MediaItem.Builder()
-            .setUri(take.toURI().toString())
-            .setClippingConfiguration(
-                MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionMs(step.startMs)
-                    .setEndPositionMs(step.endMs)
-                    .build(),
-            )
-            .build(),
-    )
+private fun playStep(player: ExoPlayer, folder: File, take: File, step: Step) {
+    val override = if (step.audio.isNotBlank()) File(folder, step.audio) else null
+    val source = override?.takeIf { it.exists() } ?: take
+    if (!source.exists()) return
+    val item = MediaItem.Builder().setUri(source.toURI().toString())
+    if (override == null) {
+        item.setClippingConfiguration(
+            MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(step.startMs)
+                .setEndPositionMs(step.endMs)
+                .build(),
+        )
+    }
+    player.setMediaItem(item.build())
     player.prepare()
     player.play()
 }

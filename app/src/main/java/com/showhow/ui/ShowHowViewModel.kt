@@ -16,6 +16,7 @@ import com.showhow.ai.MediaPipeGestureSource
 import com.showhow.ai.ObjectDetectSource
 import com.showhow.ai.RealSceneCheck
 import com.showhow.ai.VoskAsr
+import com.showhow.ai.VoskStream
 import com.showhow.ai.gestureSourceOrNone
 import com.showhow.ai.Word
 import com.showhow.capture.AudioRecorder
@@ -36,6 +37,7 @@ import com.showhow.data.GuideStore
 import com.showhow.data.PolicyRepository
 import com.showhow.data.Step
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,10 +87,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     private val detector = ObjectDetectSource(
         app,
         File(app.filesDir, DETECTOR_MODEL),
-        // ponytail: borrowing the gesture floor so this number is still tunable
-        // during Red Light. Ask Kshitij for a detectMinScore of its own -- the
-        // two models will not want the same threshold for long.
-        minScore = { policy.value.gestureMinConfidence },
+        minScore = { policy.value.detectMinScore },
     )
 
     /** Only captions are still canned -- Gemma is phase 4, and optional. */
@@ -136,14 +135,16 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * What the expert is saying, live, while recording.
      *
-     * Empty today and honestly so: Vosk runs once over the finished WAV, so
-     * there is no streaming recogniser to fill this. The Show screen shows the
-     * level meter and "listening" in the same slot rather than a sentence
-     * nobody said. Filling this needs incremental acceptWaveForm on the mic
-     * buffer, which is a change in ai/ and capture/.
+     * A preview and never the record: the guide is built from a second pass
+     * over the finished WAV, so this can drop a chunk under load without
+     * costing anything on disk. Empty when there is no Vosk model, and the
+     * Show screen then falls back to the level meter, which is still true.
      */
     private val _liveTranscript = MutableStateFlow("")
     val liveTranscript: StateFlow<String> = _liveTranscript.asStateFlow()
+
+    private var liveStream: VoskStream? = null
+    private var pcmJob: Job? = null
 
     /**
      * The photo the live camera is compared against. The Player calls this
@@ -327,12 +328,38 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         levelJob = viewModelScope.launch {
             recorder.levels.collect { db -> onLevel(db.toDouble()) }
         }
+        startLiveTranscript()
         recordJob = viewModelScope.launch {
             recorder.record(guides.takeFile(id))
         }
         // First photo now, so step one always has a picture even if the expert
         // starts talking before the camera settles.
         snap()
+    }
+
+    /**
+     * Words on the glass while the expert is still talking.
+     *
+     * Runs on its own job so a slow recognizer can never back up into the mic
+     * read loop. If there is no model this does nothing at all and the Show
+     * screen shows the meter instead.
+     */
+    private fun startLiveTranscript() {
+        _liveTranscript.value = ""
+        val stream = (ai.asr as? VoskAsr)?.openStream() ?: return
+        liveStream = stream
+        pcmJob = viewModelScope.launch(Dispatchers.Default) {
+            recorder.pcm.collect { chunk ->
+                stream.feed(chunk)?.let { _liveTranscript.value = it }
+            }
+        }
+    }
+
+    private fun stopLiveTranscript() {
+        pcmJob?.cancel()
+        pcmJob = null
+        liveStream?.let { runCatching { it.close() } }
+        liveStream = null
     }
 
     /**
@@ -361,6 +388,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         levelJob?.cancel()
         levelJob = null
         recordJob = null
+        stopLiveTranscript()
         _debug.value = _debug.value.copy(recording = false)
         if (id == null) {
             go(Screen.Library)
@@ -486,6 +514,50 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         _editing.value = g.copy(
             steps = steps.mapIndexed { i, s -> s.copy(index = i, title = "Step ${i + 1}") },
         )
+    }
+
+    /**
+     * Which step is being re-recorded right now, or -1.
+     *
+     * Review shows this as the card's own state, so the person doing it can see
+     * exactly which step the microphone is pointed at.
+     */
+    private val _reRecording = MutableStateFlow(-1)
+    val reRecording: StateFlow<Int> = _reRecording.asStateFlow()
+
+    /**
+     * Record a replacement clip for one step.
+     *
+     * It lands beside the take as its own file rather than being spliced into
+     * take.wav. Splicing would shift every later step's timestamps, which means
+     * fixing one badly-worded step could silently break the four after it --
+     * and this screen exists to make repairs cheap, not risky.
+     */
+    fun startReRecord(index: Int) {
+        val g = _editing.value ?: return
+        if (recordJob != null || index !in g.steps.indices) return
+        _reRecording.value = index
+        recordJob = viewModelScope.launch {
+            recorder.record(guides.stepAudioFile(g.id, index))
+        }
+    }
+
+    fun stopReRecord() {
+        val g = _editing.value ?: return
+        val index = _reRecording.value
+        recorder.stop()
+        recordJob = null
+        _reRecording.value = -1
+        if (index !in g.steps.indices) return
+        val file = guides.stepAudioFile(g.id, index)
+        // A recording that produced nothing but a header is not an improvement
+        // on the slice it would have replaced.
+        if (!file.exists() || file.length() <= WAV_HEADER_BYTES) {
+            file.delete()
+            return
+        }
+        commit(g.steps.toMutableList().apply { set(index, g.steps[index].copy(audio = file.name)) })
+        saveEditing()
     }
 
     fun saveEditing() {
@@ -634,24 +706,19 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // cannot see.
         (ai.asr as? AutoCloseable)?.let { runCatching { it.close() } }
         (gestureSource as? AutoCloseable)?.let { runCatching { it.close() } }
+        stopLiveTranscript()
         runCatching { detector.close() }
         sceneReference?.recycle()
         sceneReference = null
         super.onCleared()
     }
 
-    companion object {
+    private companion object {
         // ponytail: guides are Hindi until the Show screen offers the choice,
         // which is why linkWordsMr is still dead. One StateFlow when it does.
-        private const val LANG = "hi"
+        const val LANG = "hi"
 
-        /**
-         * How long the Player waits after a step's audio ends before moving on.
-         *
-         * ponytail: this belongs in policy.json and is here because Policy.kt is
-         * Kshitij's file. Ask him for an autoAdvanceMs knob -- it is exactly the
-         * kind of number the room will want changed during Red Light.
-         */
-        const val AUTO_ADVANCE_MS = 2000L
+        /** A WAV with only a header in it is a recording that never started. */
+        const val WAV_HEADER_BYTES = 44L
     }
 }

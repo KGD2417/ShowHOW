@@ -33,6 +33,24 @@ class AudioRecorder {
     /** dBFS, roughly every 20 ms. What AdaptiveGate consumes. */
     val levels: SharedFlow<Float> = _levels
 
+    private val _pcm = MutableSharedFlow<ShortArray>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
+    /**
+     * The same audio that is going into the WAV, in half-second copies, for a
+     * live recognizer to chew on.
+     *
+     * Deliberately lossy: the buffer drops the oldest chunk if nothing keeps
+     * up. That is safe because this feed is only ever a preview -- the guide
+     * is built from a second pass over the finished file, so a dropped chunk
+     * costs a few words on screen and nothing on disk. Feeding Vosk on the
+     * recorder's own thread would have been lossless and would have risked
+     * overrunning the microphone, which costs the take itself.
+     */
+    val pcm: SharedFlow<ShortArray> = _pcm
+
     @Volatile
     private var recording = false
 
@@ -48,6 +66,8 @@ class AudioRecorder {
             MediaRecorder.AudioSource.MIC, SAMPLE_RATE, CHANNEL, ENCODING, bufBytes,
         )
         val buf = ShortArray(HOP_SAMPLES)
+        val chunk = ShortArray(CHUNK_SAMPLES)
+        var chunkFill = 0
         var frames = 0L
 
         out.parentFile?.mkdirs()
@@ -68,6 +88,21 @@ class AudioRecorder {
                     }
                     raf.write(bytes)
                     frames += n
+
+                    // Copy out in half-second chunks. A per-hop emission would
+                    // be fifty allocations a second for a recognizer that wants
+                    // them in mouthfuls anyway.
+                    var off = 0
+                    while (off < n) {
+                        val take = minOf(n - off, chunk.size - chunkFill)
+                        System.arraycopy(buf, off, chunk, chunkFill, take)
+                        chunkFill += take
+                        off += take
+                        if (chunkFill == chunk.size) {
+                            _pcm.tryEmit(chunk.copyOf())
+                            chunkFill = 0
+                        }
+                    }
                 }
             } finally {
                 recording = false
@@ -87,6 +122,9 @@ class AudioRecorder {
 
         /** 20 ms at 16 kHz. Fifty gate updates a second. */
         const val HOP_SAMPLES = 320
+
+        /** Half a second at 16 kHz. What the live recognizer is fed. */
+        const val CHUNK_SAMPLES = 8_000
 
         fun dbfs(buf: ShortArray, n: Int): Float {
             if (n <= 0) return Float.NEGATIVE_INFINITY

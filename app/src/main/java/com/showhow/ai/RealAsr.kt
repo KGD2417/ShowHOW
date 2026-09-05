@@ -79,6 +79,26 @@ class VoskAsr(private val modelDir: File) : Asr, AutoCloseable {
         return out
     }
 
+    /**
+     * A second recognizer over the same model, fed live while the mic is open.
+     *
+     * Advisory only, and that distinction is the whole design: this exists so
+     * the Show screen can put words on the glass while the expert is talking.
+     * The guide is still built by [transcribe] over the finished WAV, so a
+     * dropped chunk here costs a few words on screen and nothing on disk.
+     *
+     * @return null when there is no model, which is the same day the Show
+     *   screen falls back to showing the level meter instead.
+     */
+    fun openStream(): VoskStream? {
+        val m = model() ?: return null
+        return runCatching { VoskStream(Recognizer(m, SAMPLE_RATE).also { it.setWords(false) }) }
+            .getOrElse {
+                Log.w(TAG, "could not open a live recognizer", it)
+                null
+            }
+    }
+
     /** LOAD + VERIFY + INIT, once, lazily -- a small model still costs a second or two. */
     private fun model(): Model? {
         model?.let { return it }
@@ -189,4 +209,42 @@ class VoskAsr(private val modelDir: File) : Asr, AutoCloseable {
  */
 object NoopAsr : Asr {
     override suspend fun transcribe(wav: File): List<Word> = emptyList()
+}
+
+/**
+ * A live recognizer, fed half a second at a time.
+ *
+ * Vosk returns a growing partial while someone is mid-sentence and a settled
+ * result at each pause, so the text on screen is the settled sentences plus
+ * whatever is still being said.
+ */
+class VoskStream(private val recognizer: Recognizer) : AutoCloseable {
+
+    private val settled = StringBuilder()
+
+    /** @return everything heard so far, or null if this chunk changed nothing. */
+    fun feed(pcm: ShortArray): String? = runCatching {
+        if (recognizer.acceptWaveForm(pcm, pcm.size)) {
+            val text = field(recognizer.result, "text")
+            if (text.isNotBlank()) {
+                if (settled.isNotEmpty()) settled.append(' ')
+                settled.append(text)
+            }
+            settled.toString()
+        } else {
+            val partial = field(recognizer.partialResult, "partial")
+            if (partial.isBlank()) null else (settled.toString() + " " + partial).trim()
+        }
+    }.getOrElse {
+        Log.w("VoskStream", "live recognizer stumbled, live text stops here", it)
+        null
+    }
+
+    override fun close() {
+        runCatching { recognizer.close() }
+    }
+
+    private fun field(json: String, name: String): String = runCatching {
+        Json.parseToJsonElement(json).jsonObject[name]?.jsonPrimitive?.contentOrNull.orEmpty()
+    }.getOrDefault("")
 }
