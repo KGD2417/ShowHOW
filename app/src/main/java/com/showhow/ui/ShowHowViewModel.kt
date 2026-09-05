@@ -1,15 +1,17 @@
 package com.showhow.ui
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.camera.core.ImageAnalysis
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
 import com.showhow.ai.FakeCaptioner
-import com.showhow.ai.FakeSceneCheck
 import com.showhow.ai.GESTURE_MODEL
 import com.showhow.ai.Gesture
 import com.showhow.ai.MediaPipeGestureSource
+import com.showhow.ai.RealSceneCheck
 import com.showhow.ai.VoskAsr
 import com.showhow.ai.gestureSourceOrNone
 import com.showhow.ai.Word
@@ -64,12 +66,12 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         File(app.filesDir, GESTURE_MODEL),
     ) { policy.value }
 
-    /** Speech and hand signs are real. Captions and the scene check are not yet. */
+    /** Only captions are still canned -- Gemma is phase 4, and optional. */
     val ai: AiStack = AiStack(
         asr = VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODEL_DIR)),
         captioner = FakeCaptioner(),
         gestures = gestureSource,
-        sceneCheck = FakeSceneCheck(),
+        sceneCheck = RealSceneCheck(),
     )
 
     /**
@@ -81,6 +83,35 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     val gestures: Flow<Gesture> = gestureSource.start()
 
     /**
+     * How much the live camera looks like the photo saved for the step being
+     * watched, 0..1, or 0 when nothing is being watched.
+     *
+     * Advisory, and that is a product claim, not a nicety: the Player may say
+     * "this doesn't look like the photo", and it may never disable Next.
+     * Compare against [Policy.sceneAdviseMinSimilarity].
+     */
+    private val _sceneSimilarity = MutableStateFlow(0f)
+    val sceneSimilarity: StateFlow<Float> = _sceneSimilarity.asStateFlow()
+
+    private var sceneReference: Bitmap? = null
+
+    /**
+     * The photo the live camera is compared against. The Player calls this
+     * when the step changes, and with null when it leaves.
+     */
+    fun watchScene(photo: File?) {
+        sceneReference?.recycle()
+        // A guide photo is a full-resolution JPEG and SceneHash only ever
+        // looks at 32x32 of it, so decode it small and keep it small.
+        sceneReference = photo?.takeIf { it.exists() }?.let { f ->
+            runCatching {
+                BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = 8 })
+            }.getOrNull()
+        }
+        _sceneSimilarity.value = 0f
+    }
+
+    /**
      * The one analyzer the camera binds. One frame, converted once, handed to
      * everything that wants it -- two analyzers would fight over the same
      * camera and convert the same bitmap twice.
@@ -88,9 +119,16 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     val frameAnalyzer = ImageAnalysis.Analyzer { proxy ->
         try {
             val hands = gestureSource as? MediaPipeGestureSource
-            if (hands != null) {
-                runCatching { proxy.toBitmap() }.getOrNull()
-                    ?.let { hands.onFrame(it, proxy.imageInfo.rotationDegrees) }
+            val reference = sceneReference
+            if (hands != null || reference != null) {
+                val frame = runCatching { proxy.toBitmap() }.getOrNull()
+                if (frame != null) {
+                    hands?.onFrame(frame, proxy.imageInfo.rotationDegrees)
+                    reference?.let {
+                        _sceneSimilarity.value =
+                            runCatching { ai.sceneCheck.compare(frame, it) }.getOrDefault(0f)
+                    }
+                }
             }
         } finally {
             // Not closing it stalls the pipeline after two frames.
@@ -385,6 +423,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // memory the GC cannot see.
         (ai.asr as? AutoCloseable)?.let { runCatching { it.close() } }
         (gestureSource as? AutoCloseable)?.let { runCatching { it.close() } }
+        sceneReference?.recycle()
+        sceneReference = null
         super.onCleared()
     }
 

@@ -1,16 +1,17 @@
 package com.showhow.ai
 
-import android.graphics.Bitmap
 import java.io.File
 
 /**
- * Canned answers, returned instantly, for the parts that have no real model yet.
+ * The last canned answer in the app. Captions are deterministic until Gemma
+ * lands, and Gemma is optional.
  *
- * FakeAsr and FakeGestureSource used to live here. They are gone on purpose:
- * the production path runs VoskAsr and MediaPipeGestureSource, and falls back
- * to NoopAsr and NoGestures. A recogniser that invents nine Hindi words, or a
- * palm that waves itself every two seconds, is worse than one that says
- * nothing -- it looks like it works right up until the jury asks a question.
+ * FakeAsr, FakeGestureSource and FakeSceneCheck used to live here. They are
+ * gone on purpose: speech, hand signs and the scene check are real, and where
+ * a model is missing the production path falls back to NoopAsr or NoGestures.
+ * A recogniser that invents nine Hindi words, or a palm that waves itself
+ * every two seconds, is worse than one that says nothing -- it looks like it
+ * works right up until the jury asks a question.
  */
 class FakeCaptioner : Captioner {
     private val canned = listOf(
@@ -21,9 +22,5 @@ class FakeCaptioner : Captioner {
     )
     private var n = 0
     override suspend fun caption(jpg: File): String = canned[n++ % canned.size]
-}
-
-class FakeSceneCheck : SceneCheck {
-    override fun compare(live: Bitmap, saved: Bitmap): Float = 0.86f
 }
 

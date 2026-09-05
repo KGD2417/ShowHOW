@@ -50,6 +50,10 @@ data class Policy(
      */
     val userFarFaceHeightPx: Double = 90.0,
 
+    // --- Scene check (advisory: it never disables anything) ---
+    /** Below this similarity the Player may say "this doesn't look like the photo". */
+    val sceneAdviseMinSimilarity: Float = 0.55f,
+
     // --- Hand signs ---
     /** A pose must hold this long before it moves a step. Anti-flicker. */
     val gestureDwellMs: Long = 350,
