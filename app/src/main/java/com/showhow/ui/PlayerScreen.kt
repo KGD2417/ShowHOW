@@ -103,7 +103,10 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     }
 
     val step = guide.steps[index.coerceIn(0, guide.steps.lastIndex)]
-    val photo = remember(step.photo, guideId) { File(vm.guides.dir(guideId), step.photo) }
+    // The one picture of what this step should end up looking like, or null.
+    // Null is an ordinary outcome, not a failure, and nothing below invents a
+    // frame to fill the gap.
+    val goal = remember(step.photo, guideId) { vm.guides.goalImage(guideId, step.photo) }
 
     fun goTo(i: Int) {
         index = i.coerceIn(0, guide.steps.lastIndex)
@@ -114,7 +117,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     // rather than in the ViewModel because the Player is what knows which step
     // a person is actually looking at.
     LaunchedEffect(step.photo, cameraOn) {
-        vm.watchScene(if (cameraOn) photo else null)
+        vm.watchScene(if (cameraOn) goal else null)
     }
     DisposableEffect(Unit) { onDispose { vm.watchScene(null) } }
 
@@ -219,19 +222,26 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                 Spacer(Modifier.height(12.dp))
             }
 
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(4f / 3f)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color.Black),
-            ) {
-                if (cameraOn) {
-                    LiveView(vm, owner)
-                    DetectionOverlay(detections)
-                    ShouldLookLike(photo)
-                } else {
-                    StepPhoto(photo)
+            // Nothing to show is nothing to show: with no camera and no goal
+            // image this whole frame is skipped and the step is its instruction
+            // and the expert's voice, which is a complete experience.
+            if (cameraOn || goal != null) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(4f / 3f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black),
+                ) {
+                    if (cameraOn) {
+                        // What it looks like now, with the goal inset over it.
+                        LiveView(vm, owner)
+                        DetectionOverlay(detections)
+                        goal?.let { GoalInset(it) }
+                    } else {
+                        // No camera, so the goal is the whole frame.
+                        goal?.let { GoalImage(it) }
+                    }
                 }
             }
 
@@ -335,7 +345,7 @@ private fun LiveView(vm: ShowHowViewModel, owner: androidx.lifecycle.LifecycleOw
 
 /** The saved photo, tucked in the corner, so both can be seen at once. */
 @Composable
-private fun ShouldLookLike(photo: File) {
+private fun GoalInset(photo: File) {
     val bmp = decode(photo, 4) ?: return
     Box(
         Modifier
@@ -346,12 +356,12 @@ private fun ShouldLookLike(photo: File) {
     ) {
         Image(
             bmp.asImageBitmap(),
-            contentDescription = "what this step should look like",
+            contentDescription = "what this step should look like when it is done",
             modifier = Modifier.fillMaxWidth().aspectRatio(4f / 3f),
             contentScale = ContentScale.Crop,
         )
         Text(
-            "should look like",
+            "aiming for",
             Modifier.align(Alignment.BottomCenter).background(Ink.scrim).fillMaxWidth(),
             style = Mono,
             color = Ink.dim,
@@ -361,18 +371,22 @@ private fun ShouldLookLike(photo: File) {
 }
 
 @Composable
-private fun StepPhoto(photo: File) {
-    val bmp = decode(photo, 2)
-    if (bmp == null) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No photo for this step", color = Ink.faint)
-        }
-    } else {
+private fun GoalImage(photo: File) {
+    val bmp = decode(photo, 2) ?: return
+    Box(Modifier.fillMaxSize()) {
         Image(
             bmp.asImageBitmap(),
-            contentDescription = null,
+            contentDescription = "what this step should look like when it is done",
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,
+        )
+        // Says what the picture is for. Without it this reads as decoration;
+        // with it, it is the thing to match your own work against.
+        Text(
+            "aiming for",
+            Modifier.align(Alignment.BottomStart).background(Ink.scrim).padding(horizontal = 10.dp, vertical = 4.dp),
+            style = Mono,
+            color = Ink.dim,
         )
     }
 }

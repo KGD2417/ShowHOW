@@ -33,6 +33,25 @@ class GuideStore(private val root: File) {
     fun stepAudioFile(id: String, stepIndex: Int): File = File(dir(id), "step$stepIndex.wav")
 
     /**
+     * The one photograph that shows what this step should end up looking like,
+     * or null.
+     *
+     * Null and never a placeholder. A step with no usable photo is a real and
+     * ordinary thing -- the expert may have had the phone face down, or the
+     * frame nearest that step may have been the inside of a pocket -- and the
+     * honest answer is to show the instruction and the expert's audio without
+     * a picture. A grey box captioned "no photo" is worse than nothing: it
+     * takes a third of the screen to say the app has failed, when nothing has.
+     *
+     * Zero length counts as absent, because a JPEG whose write was interrupted
+     * exists on disk and decodes to nothing.
+     */
+    fun goalImage(id: String, photo: String): File? {
+        if (photo.isBlank()) return null
+        return File(dir(id), photo).takeIf { it.isFile && it.length() > 0 }
+    }
+
+    /**
      * Copy one slice of the take into its own PCM16/16k/mono WAV.
      *
      * For recognisers that hand back sentences with no word clock: the only way
