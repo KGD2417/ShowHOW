@@ -80,6 +80,17 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     private val _easyMode = MutableStateFlow(false)
     val easyMode: StateFlow<Boolean> = _easyMode.asStateFlow()
 
+    /**
+     * The live mode and the sentence explaining it, for the Player's mode bar.
+     * Separate from [debug] on purpose: the Player should not have to know what
+     * a Schmitt trigger is to render "TALK <- phone is flat".
+     */
+    private val _mode = MutableStateFlow(Mode.TAP)
+    val mode: StateFlow<Mode> = _mode.asStateFlow()
+
+    private val _reason = MutableStateFlow("TAP <- start")
+    val reason: StateFlow<String> = _reason.asStateFlow()
+
     private val recorder = AudioRecorder()
     private val motion = MotionSource(app)
     private var gate = AdaptiveGate(policy.value)
@@ -100,6 +111,17 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
     /** When each photo was taken, on the take's clock. Defect #1 lived here. */
     private val snapTimesMs = mutableListOf<Long>()
+
+    /**
+     * Mean recogniser confidence over the last words of the most recent take.
+     * 1f until something has actually been transcribed, so a phone with no
+     * model never reports speech as unclear -- silence is not the same as
+     * mumbling, and claiming otherwise would push the app into HANDS forever.
+     */
+    private var meanWordConfidence = 1f
+
+    /** Height in pixels of the largest detected face, or 0 when nothing detects. */
+    private var faceHeightPx = 0.0
 
     init {
         refreshLibrary()
@@ -192,6 +214,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // Photos were snapped at live boundaries; these are the final ones.
         // There are usually more of the former, so the pairing is by time.
         val snaps = mapSnapsToSteps(snapTimesMs.toList(), ranges)
+        meanWordConfidence = meanConfidence(words.takeLast(p.speechUnclearWindowWords))
         val steps = ranges.map { r ->
             val photo = snaps[r.index].takeIf { it >= 0 }
                 ?.let { guides.snapFile(id, it) }
@@ -204,6 +227,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 endMs = r.endMs,
                 photo = photo?.name.orEmpty(),
                 transcript = transcriptFor(words, r.startMs, r.endMs),
+                modeHint = modeHint(wordsIn(words, r.startMs, r.endMs), p),
             )
         }
         val guide = Guide(
@@ -254,18 +278,32 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         pushMode(_debug.value.levelDb)
     }
 
+    /**
+     * Report the largest face the camera can see, in pixels. Wired to a
+     * detector in phase 7; until one calls this, [faceHeightPx] stays 0 and
+     * userFar stays false rather than being guessed at from brightness.
+     */
+    fun feedFaceSize(px: Double) {
+        faceHeightPx = px
+    }
+
     private fun pushMode(db: Double) {
+        val p = policy.value
         val committed = engine.update(
             System.currentTimeMillis(),
             ModeInputs(
                 easyMode = _easyMode.value,
                 accelVariance = _debug.value.accelVariance,
                 dbfs = db,
-                speechUnclear = false,
-                userFar = false,
+                speechUnclear = meanWordConfidence < p.speechUnclearConfThreshold,
+                // 0 means nothing is looking, which is not the same as a face
+                // far away, so it must not read as "far".
+                userFar = faceHeightPx > 0.0 && faceHeightPx < p.userFarFaceHeightPx,
             ),
         )
         if (committed) {
+            _mode.value = engine.mode
+            _reason.value = engine.reason
             _debug.value = _debug.value.copy(
                 mode = engine.mode,
                 reason = engine.reason,
@@ -274,9 +312,25 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun transcriptFor(words: List<Word>, startMs: Long, endMs: Long): String =
+    private fun wordsIn(words: List<Word>, startMs: Long, endMs: Long): List<Word> =
         words.filter { it.startMs >= startMs && it.startMs < endMs }
-            .joinToString(" ") { it.text }
+
+    private fun transcriptFor(words: List<Word>, startMs: Long, endMs: Long): String =
+        wordsIn(words, startMs, endMs).joinToString(" ") { it.text }
+
+    private fun meanConfidence(words: List<Word>): Float =
+        if (words.isEmpty()) 1f else words.map { it.confidence }.average().toFloat()
+
+    /**
+     * Advice for the mode bar, never a gate. A step the recogniser struggled
+     * with is a step where asking the phone out loud will struggle too.
+     */
+    private fun modeHint(words: List<Word>, p: Policy): String =
+        if (words.isNotEmpty() && meanConfidence(words) < p.speechUnclearConfThreshold) {
+            "speech was unclear here, hand signs work better"
+        } else {
+            ""
+        }
 
     private fun snap() {
         val id = currentId ?: return

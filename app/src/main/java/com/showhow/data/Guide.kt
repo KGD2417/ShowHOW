@@ -15,6 +15,8 @@ data class Step(
     val transcript: String = "",
     /** Advice, never a gate. Nothing in the app blocks on this being set. */
     val warning: String? = null,
+    /** e.g. "speech was unclear here, HANDS works better". Advice, never a gate. */
+    val modeHint: String = "",
 )
 
 @Serializable

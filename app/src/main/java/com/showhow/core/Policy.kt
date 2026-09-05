@@ -35,6 +35,20 @@ data class Policy(
     val roomLoudExitDb: Double = -32.0,
     /** A candidate mode must survive this long before it is committed. */
     val dwellMs: Long = 400,
+    /** Below this mean recogniser confidence the take counts as unclear speech. */
+    val speechUnclearConfThreshold: Float = 0.55f,
+    /** How many of the most recent words that mean is taken over. */
+    val speechUnclearWindowWords: Int = 12,
+    /**
+     * A detected face shorter than this many pixels means the user is out of
+     * arm's reach, so TALK beats TAP.
+     *
+     * ponytail: nothing measures this yet -- it needs the MediaPipe face
+     * detector that lands with the gesture model. Until then userFar stays
+     * false, because a brightness or loudness proxy would be a guess, and this
+     * app does not guess at things it cannot honestly measure.
+     */
+    val userFarFaceHeightPx: Double = 90.0,
 
     // --- LinkWordConfirmer: the second opinion on a candidate cut ---
     /** How far either side of a candidate cut a linking word still counts. */
