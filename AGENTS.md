@@ -154,21 +154,33 @@ returns *nothing* when it is absent — never canned data.
 
 **What is actually left**
 
-- **No `models/coach.task` exists yet.** Until one is pushed, every coach path
-  is a no-op and the app behaves as it did before the coach was written.
-- `Guide.title` is never editable — it is set to `"New job"` at build time and
-  no screen changes it. It also means the coach's prompt says "The job: New
-  job" instead of what the job is.
-- `ShowHowViewModel.commit()` retitles every step `"Step N"`, so one Split or
-  Join in Review wipes the titles the coach wrote. `splitStep` copies one
-  `instruction` onto both halves; `joinSteps` drops the lower one's.
-- `ReviewScreen` shows the transcript but not `Step.instruction`, so the expert
-  never sees what the coach wrote about their own job.
-- `Step.warning` is declared and never set by anything.
+- **No `models/coach.task` exists on any phone, and none has ever been loaded.**
+  Every coach path is written, compiled and tested against canned replies, and
+  none of it has run against a real model. Load time, inference time and memory
+  use are unmeasured. This is the single largest unknown in the project.
 - `userFar` is always false: `feedFaceSize` has no caller, so that `ModeEngine`
   branch is unreachable. It needs a face detector, and §2's fourth constraint
   says we do not guess at what we cannot honestly measure.
-- The object detector is generic COCO — "laptop", "keyboard", never "screw".
+- The object detector is generic COCO -- "laptop", "keyboard", "person". It has
+  no label for a screw, a RAM module, an SSD or a screwdriver and never will
+  until a different `.tflite` is on the phone. Nothing in the app claims
+  otherwise; `AnswerEvidence.VISUAL_FACT` is capped by what the detector
+  actually returned.
+- `com.google.android.datatransport` arrives transitively through MediaPipe and
+  registers a receiver and a JobService in the merged manifest. It cannot send
+  anything -- there is no `INTERNET` permission -- but the guarantee rests on
+  the missing permission, not on the library's absence. See §2.
+
+**How to check any of this yourself**
+
+```bash
+./gradlew test          # 187 JVM tests, including the AI evaluation harness
+```
+
+The harness (`app/src/test/java/com/showhow/eval/`) runs fourteen laptop-repair
+scenarios plus two adversarial ones through the real parsers and grounding, with
+no model file, and prints a PASS table. It evaluates *this app's* handling of a
+model's output -- never how good the model is, which no JVM test can tell you.
 
 ## 7. The one thing that makes this project survivable
 

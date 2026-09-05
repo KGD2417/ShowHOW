@@ -214,39 +214,43 @@ exposes one `DebugState` so the debug screen repaints atomically.
 
 Ranked. Fix from the top. Everything here was checked against the code.
 
-1. **No `models/coach.task` is on any phone.** `ai/Coach` is written, compiled
-   and wired, and has never been loaded. Until a model is pushed, the rewrite
-   and the learner Q&A are both no-ops — correctly so, but unverified.
-2. **`Guide.title` is never editable.** Set to `"New job"` in `buildGuide`,
-   rendered as static text in Review, changed by nothing. Every guide in the
-   library carries the same name, and the coach's prompt says "The job: New
-   job" rather than what the job is.
-3. **Review edits damage the coach's output.** `commit()` retitles every step
-   `"Step N"`, so one Split or Join wipes the coach's titles; `splitStep`
-   copies one `instruction` onto both halves; `joinSteps` drops the lower
-   step's. `ReviewScreen` also never displays `instruction`, so the expert
-   cannot see or correct it.
-4. **`userFar` is still hardcoded `false`.** It needs a face height in pixels;
+1. **No coach model exists on any phone.** `ai/Coach` is written, compiled and
+   covered by tests against canned replies, and has never been loaded. Its load
+   time, inference latency and memory use are unmeasured, and it will contend
+   for RAM with Vosk and two MediaPipe graphs. Until a `.task` file is pushed,
+   every coach path is a correct no-op and the app behaves as it did before the
+   coach existed.
+2. **`userFar` is still hardcoded `false`.** It needs a face height in pixels;
    `ShowHowViewModel.feedFaceSize` and `Policy.userFarFaceHeightPx` are in place
    waiting for a MediaPipe face detector. The suggested brightness proxy is not
    a distance measurement, and §2's fourth constraint says this app does not
    guess at what it cannot honestly measure.
-5. **No swipe gestures.** A swipe is motion over time, not a pose, so the canned
-   classifier cannot emit one. Palm and fist already cover ±1 step; add a
-   landmark-x tracker only if that turns out too coarse in front of a user.
-6. `Step.warning` is never set by anything; `GuideStore.delete` has no UI.
-7. `speechUnclear` is computed from the *previous* take's mean word confidence,
+3. **The detector is generic COCO.** It knows "laptop", "keyboard", "person",
+   and has no label for a screw, a RAM module, an SSD or a screwdriver. This is
+   kept explicit everywhere it matters: detector output is a *count* when
+   picking frames, tool names in a learner's context come from what the expert
+   said rather than from the detector, and a `VISUAL_FACT` answer is capped by
+   what was actually returned. Swapping in a fine-tuned `.tflite` is a file
+   push; nothing needs rebuilding.
+4. **No swipe gestures.** A swipe is motion over time, not a pose, so the canned
+   classifier cannot emit one. Palm and fist already cover ±1 step.
+5. `speechUnclear` is computed from the *previous* take's mean word confidence,
    because Vosk runs once over the finished WAV rather than live. It is the
    right signal on the wrong clock; a streaming recognizer would fix it.
-8. The object detector is generic COCO. It knows "laptop" and "keyboard" and
-   will never know "screw" without a fine-tune nobody has time for.
+6. `GuideStore.delete` has no UI.
+7. `com.google.android.datatransport` is pulled in transitively by MediaPipe and
+   registers a broadcast receiver and a JobService in the merged manifest. It is
+   inert -- the app has no `INTERNET` permission, so any upload attempt would
+   throw -- but the offline guarantee rests on the stripped permission rather
+   than on the library not being in the APK.
 
 **Fixed, listed here so nobody re-reports them:** the photo-indexing defect
-(photos are now paired to steps by time in `core/mapSnapsToSteps`, held by
-`SnapMapperTest`); the fakes (`Fakes.kt` is deleted, every model is real);
-`RealSceneCheck` being unwired (it rides `frameAnalyzer`); `LinkWordConfirmer`
-being a no-op; the guide language being hardcoded `"hi"` (it is a picker, and
-only offers languages whose model is on the phone).
+(photos are paired to steps by time in `core/mapSnapsToSteps`, then quality-
+filtered by `core/pickFrames`, both held by tests); the fakes (`Fakes.kt` is
+deleted, every model is real); `RealSceneCheck` being unwired; `LinkWordConfirmer`
+being a no-op; the guide language being hardcoded `"hi"`; `Guide.title` being
+uneditable; `commit()` overwriting the coach's step titles; `Step.warning` never
+being written; and guide building running on the main thread.
 
 ## 11. Dependencies, and the model files that are not in git
 

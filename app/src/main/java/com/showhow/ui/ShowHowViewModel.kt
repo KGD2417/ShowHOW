@@ -57,6 +57,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Everything the debug screen shows. One object so it repaints atomically. */
 data class DebugState(
@@ -196,7 +197,6 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     val ai: AiStack = AiStack(
         asr = deviceAsr ?: voskAsr,
         captioner = DetectorCaptioner(detector),
-        gestures = gestureSource,
         sceneCheck = RealSceneCheck(),
     )
 
@@ -593,7 +593,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun buildGuide(id: String): String {
+    private suspend fun buildGuide(id: String): String = withContext(Dispatchers.Default) {
         val p = policy.value
         val durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
         // The recogniser runs once over the whole take, so its word clock and
@@ -679,7 +679,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         )
         guides.save(guide)
         refreshLibrary()
-        return id
+        id
     }
 
     /**

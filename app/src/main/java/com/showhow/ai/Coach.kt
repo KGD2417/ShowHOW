@@ -496,8 +496,26 @@ internal fun groundedSource(
     step: TakeStep,
     instruction: String,
 ): Provenance {
-    val ceiling = provenanceOf(step.transcript, step.caption, instruction)
-    return if (rank(claimed) < rank(ceiling)) claimed else ceiling
+    if (instruction.isBlank()) return Provenance.UNKNOWN
+    if (claimed == Provenance.UNKNOWN) return Provenance.UNKNOWN
+
+    // Which channels actually carried anything for this step. GENERAL is always
+    // available: the model always has its own knowledge, and saying so is the
+    // humblest claim it can make short of admitting it does not know.
+    val available = buildList {
+        if (step.transcript.isNotBlank()) add(Provenance.EXPERT)
+        if (step.caption.isNotBlank()) add(Provenance.VISUAL)
+        add(Provenance.GENERAL)
+    }
+    // The strongest channel that both exists and is no stronger than the claim.
+    //
+    // Two rules in one line, and both are load-bearing. Never stronger than the
+    // claim, so a model that says "I worked from the photo" is not promoted to
+    // the expert's word. And never a channel that was empty, which is the part
+    // that was missing: a VISUAL claim on a step where no detector ran is not
+    // merely optimistic, it describes an observation nothing made.
+    return available.filter { rank(it) <= rank(claimed) }.maxByOrNull { rank(it) }
+        ?: Provenance.GENERAL
 }
 
 /** How strong a claim each value makes. UNKNOWN claims nothing. */

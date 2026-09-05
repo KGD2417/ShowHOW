@@ -65,6 +65,10 @@ fun DebugScreen(vm: ShowHowViewModel) {
             Kv(name, if (there) "present" else "MISSING (falls back, never fakes)")
         }
         Kv("detector delegate", vm.detectorDelegate)
+        // Blank until the coach has been asked something: it loads lazily, so
+        // "--" here means "not yet used", not "failed".
+        Kv("coach backend", vm.coachDelegate)
+        Kv("coach model on phone", if (vm.coachPresent) "yes" else "NO -- coach is off")
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 

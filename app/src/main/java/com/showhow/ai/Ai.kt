@@ -42,10 +42,16 @@ interface SceneCheck {
     fun compare(live: Bitmap, saved: Bitmap): Float
 }
 
-/** Everything the app needs from the AI layer, so swapping fakes is one line. */
+/**
+ * The models the guide pipeline pulls from, in one place.
+ *
+ * Hand signs are deliberately not in here. They are a Flow the Player collects
+ * for as long as it is on screen, not something the build pipeline asks a
+ * question of, and carrying them here meant a field that was set on every
+ * construction and read by nothing.
+ */
 data class AiStack(
     val asr: Asr,
     val captioner: Captioner,
-    val gestures: GestureSource,
     val sceneCheck: SceneCheck,
 )

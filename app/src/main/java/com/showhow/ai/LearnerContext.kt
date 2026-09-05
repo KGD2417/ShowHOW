@@ -153,14 +153,23 @@ internal fun renderContext(c: LearnerContext): String = buildString {
  * cover something is the one claim nobody has an incentive to fake.
  */
 internal fun groundedEvidence(claimed: AnswerEvidence, c: LearnerContext): AnswerEvidence {
-    val ceiling = when {
-        c.hasGuideEvidence -> AnswerEvidence.DIRECT_GUIDE_FACT
-        c.hasVisualEvidence -> AnswerEvidence.VISUAL_FACT
-        // The model always has its own knowledge, so this floor is always
-        // available. It is never a reason to stay silent.
-        else -> AnswerEvidence.GENERAL_KNOWLEDGE
+    if (claimed == AnswerEvidence.UNCERTAIN) return AnswerEvidence.UNCERTAIN
+
+    // Which channels actually carried anything. GENERAL_KNOWLEDGE is always
+    // available -- the model always has its own knowledge, and that is never a
+    // reason to stay silent on someone mid-repair.
+    val available = buildList {
+        if (c.hasGuideEvidence) add(AnswerEvidence.DIRECT_GUIDE_FACT)
+        if (c.hasVisualEvidence) add(AnswerEvidence.VISUAL_FACT)
+        add(AnswerEvidence.GENERAL_KNOWLEDGE)
     }
-    return if (rank(claimed) < rank(ceiling)) claimed else ceiling
+    // The strongest channel that both exists and is no stronger than the claim.
+    // Never stronger, so knowledge is never promoted into the guide's authority;
+    // and never an empty channel, so "I can see the SSD" with the camera off
+    // does not survive as a visual fact just because the guide happened to have
+    // text in it.
+    return available.filter { rank(it) <= rank(claimed) }.maxByOrNull { rank(it) }
+        ?: AnswerEvidence.GENERAL_KNOWLEDGE
 }
 
 private fun rank(e: AnswerEvidence): Int = when (e) {
