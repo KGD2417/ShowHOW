@@ -33,9 +33,29 @@ class RealSceneCheck : SceneCheck {
     private fun Bitmap.scale(w: Int, h: Int): Bitmap =
         if (width == w && height == h) this else Bitmap.createScaledBitmap(this, w, h, true)
 
-    private companion object {
+    companion object {
         // 32x32 is plenty for both a 9x8 dHash and a 36-bin histogram.
-        const val SIZE = 32
+        private const val SIZE = 32
+
+        /**
+         * The structure hash of one frame, on the same pixels the scene check
+         * already uses.
+         *
+         * For "has the scene settled since the last frame", which needs to
+         * compare two live frames to each other rather than a live frame to a
+         * saved photograph. One small scale and a dHash; no second decode.
+         */
+        fun hashOf(bmp: Bitmap): Long {
+            val small = if (bmp.width == SIZE && bmp.height == SIZE) {
+                bmp
+            } else {
+                Bitmap.createScaledBitmap(bmp, SIZE, SIZE, true)
+            }
+            val px = IntArray(SIZE * SIZE)
+            small.getPixels(px, 0, SIZE, 0, 0, SIZE, SIZE)
+            if (small !== bmp) small.recycle()
+            return SceneHash.dHash(px, SIZE, SIZE)
+        }
     }
 }
 

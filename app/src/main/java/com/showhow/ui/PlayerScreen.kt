@@ -55,6 +55,7 @@ import com.showhow.ai.AnswerEvidence
 import com.showhow.ai.Gesture
 import com.showhow.capture.CameraController
 import com.showhow.core.Mode
+import com.showhow.core.StepCheck
 import com.showhow.data.Guide
 import com.showhow.data.Step
 import java.io.File
@@ -88,6 +89,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     val mode by vm.mode.collectAsStateWithLifecycle()
     val reason by vm.reason.collectAsStateWithLifecycle()
     val similarity by vm.sceneSimilarity.collectAsStateWithLifecycle()
+    val check by vm.stepCheck.collectAsStateWithLifecycle()
     val detections by vm.detections.collectAsStateWithLifecycle()
     val policy by vm.policy.collectAsStateWithLifecycle()
     val readAloud by vm.readAloud.collectAsStateWithLifecycle()
@@ -121,7 +123,13 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     // rather than in the ViewModel because the Player is what knows which step
     // a person is actually looking at.
     LaunchedEffect(step.photo, cameraOn) {
-        vm.watchScene(if (cameraOn) goal else null)
+        // The step's own detector labels travel with the photograph, so the
+        // cascade compares like with like: what the detector saw then against
+        // what it sees now.
+        vm.watchScene(
+            if (cameraOn) goal else null,
+            step.caption.split(",").map { it.trim() }.filter { it.isNotBlank() },
+        )
     }
     DisposableEffect(Unit) { onDispose { vm.watchScene(null) } }
 
@@ -249,13 +257,27 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                 }
             }
 
-            // Advice, never a gate. Next below still works at any similarity.
-            if (cameraOn && similarity > 0f && similarity < policy.sceneAdviseMinSimilarity) {
+            // Advice, never a gate. Next below works at every one of these, and
+            // there is deliberately no fourth value that would stop anyone.
+            if (cameraOn) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "This does not look much like the photo yet (%.0f%%)".format(similarity * 100),
+                    when (check) {
+                        StepCheck.CORRECT -> "That looks like the photo for this step"
+                        StepCheck.LIKELY_CORRECT ->
+                            "Close to the photo for this step (%.0f%%)".format(similarity * 100)
+                        // Says which kind of nothing, because "hold still" and
+                        // "this looks wrong" are different messages and only one
+                        // of them is true here.
+                        StepCheck.UNCERTAIN ->
+                            "Can't tell yet - hold the phone steady on your work"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Ink.amber,
+                    color = when (check) {
+                        StepCheck.CORRECT -> Ink.green
+                        StepCheck.LIKELY_CORRECT -> Ink.teal
+                        StepCheck.UNCERTAIN -> Ink.dim
+                    },
                 )
             }
 

@@ -12,6 +12,8 @@ import com.showhow.ai.Detections
 import com.showhow.ai.TakeStep
 import com.showhow.ai.AnswerEvidence
 import com.showhow.ai.Coach
+import com.showhow.ai.ComponentLocator
+import com.showhow.ai.Localization
 import com.showhow.ai.learnerContext
 import com.showhow.ai.DeviceAsr
 import com.showhow.ai.DetectorCaptioner
@@ -33,6 +35,9 @@ import com.showhow.core.AdaptiveGate
 import com.showhow.core.Mode
 import com.showhow.core.ModeEngine
 import com.showhow.core.ModeInputs
+import com.showhow.core.CheckInputs
+import com.showhow.core.StepCheck
+import com.showhow.core.checkStep
 import com.showhow.core.correctionEvidence
 import com.showhow.core.mapSnapsToSteps
 import com.showhow.core.pickFrames
@@ -245,6 +250,42 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     private val _sceneSimilarity = MutableStateFlow(0f)
     val sceneSimilarity: StateFlow<Float> = _sceneSimilarity.asStateFlow()
 
+    /**
+     * How much the bench looks like the step, settled deterministically.
+     *
+     * Advisory in the strongest sense: no control anywhere reads it. It is
+     * computed from SceneHash and the detector's own labels, costs a couple of
+     * milliseconds, and never wakes the coach -- a 2B model asked on every
+     * frame would drain the phone and freeze the screen for seconds at a time.
+     */
+    private val _stepCheck = MutableStateFlow(StepCheck.UNCERTAIN)
+    val stepCheck: StateFlow<StepCheck> = _stepCheck.asStateFlow()
+
+    /** dHash of the previous analysed frame, for "has the scene settled". */
+    private var lastFrameHash: Long? = null
+
+    /** Detector labels from the photograph of the step being watched. */
+    @Volatile
+    private var expectedLabels: List<String> = emptyList()
+
+    /**
+     * Point at a named component, or say why not.
+     *
+     * Today every laptop part comes back Uncertain, because the loaded model is
+     * generic COCO and has no label for one. Pushing a fine-tuned .tflite and
+     * adding its labels to componentAliases in policy.json swaps that in with
+     * no rebuild.
+     */
+    private val locator = ComponentLocator(
+        aliases = { policy.value.componentAliases },
+        minScore = { policy.value.componentMinScore },
+    )
+
+    fun locate(component: String): Localization = locator.locate(component, _detections.value)
+
+    /** What the current detector claims to be able to find. For telemetry. */
+    fun componentVocabulary(): Set<String> = locator.vocabulary()
+
     private var sceneReference: Bitmap? = null
 
     /**
@@ -265,7 +306,10 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * The photo the live camera is compared against. The Player calls this
      * when the step changes, and with null when it leaves.
      */
-    fun watchScene(photo: File?) {
+    fun watchScene(photo: File?, expected: List<String> = emptyList()) {
+        expectedLabels = expected
+        lastFrameHash = null
+        _stepCheck.value = StepCheck.UNCERTAIN
         sceneReference?.recycle()
         // A guide photo is a full-resolution JPEG and SceneHash only ever
         // looks at 32x32 of it, so decode it small and keep it small.
@@ -313,6 +357,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                         _sceneSimilarity.value =
                             runCatching { ai.sceneCheck.compare(frame, it) }.getOrDefault(0f)
                     }
+                    // The cascade, on the frame that is already decoded and
+                    // already upright. Arithmetic only; no model is woken.
+                    updateStepCheck(frame, seen.boxes.map { b -> b.label })
                 }
             }
         } finally {
@@ -324,6 +371,29 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             // Not closing the proxy stalls the pipeline after two frames.
             proxy.close()
         }
+    }
+
+    /**
+     * Run the verification cascade over the frame the analyzer already has.
+     *
+     * Reuses the same 32x32 pixels SceneHash works on, so the cost is one small
+     * scale and a dHash -- there is no second decode and no second model.
+     */
+    private fun updateStepCheck(frame: Bitmap, seen: List<String>) {
+        val hash = runCatching { RealSceneCheck.hashOf(frame) }.getOrNull() ?: return
+        val changed = lastFrameHash?.let { com.showhow.core.SceneHash.hamming(hash, it) }
+        lastFrameHash = hash
+        _stepCheck.value = checkStep(
+            CheckInputs(
+                sceneSimilarity = _sceneSimilarity.value,
+                // No previous frame yet: treat it as settled rather than as a
+                // huge change, or the first frame after every step is wasted.
+                frameToFrameChange = changed ?: 0,
+                expected = expectedLabels,
+                seen = seen,
+            ),
+            policy.value,
+        )
     }
 
     private val _screen = MutableStateFlow<Screen>(Screen.Library)

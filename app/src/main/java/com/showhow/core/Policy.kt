@@ -107,6 +107,54 @@ data class Policy(
         "\u092a\u0947\u091a\u0915\u0938", "\u0938\u094d\u0915\u094d\u0930\u0942\u0921\u094d\u0930\u093e\u0907\u0935\u0930", "\u091a\u093f\u092e\u091f\u0940",
     ),
 
+    // --- Naming a component the detector can point at ---
+    /**
+     * Component name -> the detector labels that mean it.
+     *
+     * **Empty for every laptop part today, and that is the honest state.** The
+     * loaded model is generic COCO: it knows laptop, keyboard, mouse, person,
+     * and has no label for a RAM module, an SSD, a heatsink, a screw or a
+     * screwdriver. A component with no labels here is reported as "this
+     * detector has no label for that" and no box is drawn.
+     *
+     * MediaPipe cannot be asked what vocabulary a model has before running it,
+     * so the app cannot discover this -- it has to be told. Pushing a
+     * fine-tuned .tflite and adding its labels here swaps the whole thing in
+     * with no rebuild, which is the point of it living in policy.json.
+     */
+    val componentAliases: Map<String, List<String>> = mapOf(
+        "laptop" to listOf("laptop"),
+        "keyboard" to listOf("keyboard"),
+        "mouse" to listOf("mouse"),
+        "screen" to listOf("tv", "laptop"),
+        // Below: what a laptop-repair model would fill in. Empty means the
+        // detector on this phone genuinely cannot find these.
+        "ram" to emptyList(),
+        "ssd" to emptyList(),
+        "screw" to emptyList(),
+        "screwdriver" to emptyList(),
+        "heatsink" to emptyList(),
+        "battery" to emptyList(),
+    ),
+    /** Below this a box is not worth pointing at and calling by name. */
+    val componentMinScore: Float = 0.60f,
+
+    // --- Verification cascade (does the bench look like the step?) ---
+    /**
+     * Above this many changed dHash bits between frames the phone is still
+     * moving, and nothing is compared.
+     *
+     * A frame taken mid-swing is how an app ends up telling someone their
+     * perfectly correct bench looks wrong.
+     */
+    val checkSettledMaxChange: Int = 14,
+    /** At or above this similarity the scene matches the step's photograph. */
+    val checkCorrectSimilarity: Float = 0.72f,
+    /** ...and above this it is worth mentioning, not worth insisting on. */
+    val checkLikelySimilarity: Float = 0.55f,
+    /** Fraction of the photograph's labels that must be in frame now. */
+    val checkLabelOverlap: Double = 0.5,
+
     // --- Coach (the on-device model that rewrites steps and answers questions) ---
     /**
      * Chars of guide handed to the model per call.
