@@ -93,6 +93,40 @@ class CoachParseTest {
         assertEquals(listOf(null, null), parseRewrite("I could not do that.", 2))
     }
 
+    // --- the job's name ---------------------------------------------------
+
+    @Test
+    fun `the coach names the job from the session`() {
+        val raw = """
+            TITLE|Replacing laptop RAM
+            1|EXPERT|Power down|Shut the laptop down.|
+        """.trimIndent()
+        assertEquals("Replacing laptop RAM", parseTitle(raw))
+        // And the title line must not be mistaken for a step.
+        assertEquals("Power down", parseRewrite(raw, 1)[0]?.title)
+    }
+
+    @Test
+    fun `a decorated title line still yields the name`() {
+        assertEquals("Replacing laptop RAM", parseTitle("**TITLE**| \"Replacing laptop RAM\" "))
+        assertEquals("Replacing laptop RAM", parseTitle("Title | Replacing laptop RAM"))
+    }
+
+    @Test
+    fun `a model that will not name the job leaves it unnamed`() {
+        // Better an honest "New job" than a name invented from a garbled take.
+        assertEquals("", parseTitle("TITLE|Untitled job"))
+        assertEquals("", parseTitle("TITLE|I cannot tell what this job is"))
+        assertEquals("", parseTitle("1|EXPERT|A|do it|"))
+        assertEquals("", parseTitle(""))
+    }
+
+    @Test
+    fun `a title that is really a paragraph is rejected`() {
+        val essay = "TITLE|" + "a very long description of the job ".repeat(4)
+        assertEquals("", parseTitle(essay))
+    }
+
     // --- the extra columns -----------------------------------------------
 
     @Test

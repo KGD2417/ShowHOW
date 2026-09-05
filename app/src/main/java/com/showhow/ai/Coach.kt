@@ -1,8 +1,12 @@
 package com.showhow.ai
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Log
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.genai.llminference.GraphOptions
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.showhow.data.Provenance
 import com.showhow.data.provenanceOf
 import java.io.File
@@ -38,6 +42,15 @@ data class TakeStep(
      */
     val correction: String = "",
 )
+
+/**
+ * What the coach made of a whole take: a name for the job, and the steps.
+ *
+ * The name comes from the same call and the same reading. Asking twice would
+ * cost a second inference for one line, and a model that has just written every
+ * step already knows what the job was.
+ */
+data class CoachGuide(val title: String, val steps: List<CoachStep?>)
 
 /** One step after the coach has rewritten it. */
 data class CoachStep(
@@ -142,8 +155,8 @@ class Coach(
      * so the caller keeps the expert's own words there rather than blanking a
      * step the model merely skipped.
      */
-    suspend fun rewrite(job: String, steps: List<TakeStep>): List<CoachStep?> {
-        if (steps.isEmpty()) return emptyList()
+    suspend fun rewrite(job: String, steps: List<TakeStep>): CoachGuide {
+        if (steps.isEmpty()) return CoachGuide("", emptyList())
         val body = steps.mapIndexed { i, s -> describe(i + 1, s) }
             .joinToString("\n\n")
             .take(maxContextChars())
@@ -163,6 +176,19 @@ class Coach(
             $body
 
             Read all of it before writing anything. Then write the guide.
+
+            Start with one line naming the job, in this exact form:
+
+            TITLE|a short name for this job
+
+            Four or five words, naming the thing worked on and what was done
+            to it, taken only from what the expert actually said in the session
+            above. Do not reuse any wording from these instructions.
+
+            If most steps have nothing said in them, or the transcript is too
+            garbled to tell what the job was, write exactly TITLE|Untitled job.
+            An honestly unnamed guide is better than a confident wrong name: the
+            expert renames it on the next screen either way.
 
             Rules:
             - Keep the steps in the order they happened, and keep their numbers.
@@ -210,10 +236,11 @@ class Coach(
             """.trimIndent(),
         )
         val written = parseRewrite(out, steps.size)
-        Log.i(TAG, "rewrote ${written.count { it != null }}/${steps.size} steps")
+        val title = parseTitle(out)
+        Log.i(TAG, "rewrote ${written.count { it != null }}/${steps.size} steps, title=\"$title\"")
         // The model's own SOURCE is a claim, and a claim is checked against what
         // it was actually handed before it reaches a guide.
-        return written.mapIndexed { i, c ->
+        val graded = written.mapIndexed { i, c ->
             c?.copy(
                 source = groundedSource(c.source, steps[i], c.instruction),
                 // Same rule for the warning, and for the same reason. A model
@@ -224,6 +251,7 @@ class Coach(
                 noteSource = groundedSource(c.noteSource, steps[i], c.note),
             )
         }
+        return CoachGuide(title, graded)
     }
 
     /** One step as the prompt sees it. */
@@ -291,6 +319,92 @@ class Coach(
         return parseAnswer(out, context)
     }
 
+    /**
+     * The same question, with the camera frame attached.
+     *
+     * This is the only thing in ShowHow that can answer "is this the right
+     * screwdriver?". The object detector never will: it knows ordinary COCO
+     * classes -- laptop, keyboard, person -- and has no label for a screwdriver,
+     * a screw head, a RAM module or a heatsink, and no amount of asking changes
+     * that. Gemma 3n has actually looked at the picture, and can say "that is a
+     * Phillips, and the screws in this photo are Phillips too" where a detector
+     * can only ever say "laptop, 0.94".
+     *
+     * A session rather than the one-shot call, because [LlmInferenceSession] is
+     * the only thing that takes an image. Built per question and closed after:
+     * the image is part of the session's state, and a session reused across two
+     * different frames would answer the second question about the first photo.
+     *
+     * Falls back to the text-only answer whenever vision is unavailable -- a
+     * model without vision weights, a frame that will not convert, a graph that
+     * refuses the modality. The learner gets a worse answer, never no answer,
+     * and never a claim about a picture nothing looked at.
+     */
+    suspend fun see(context: LearnerContext, frame: Bitmap): Pair<AnswerEvidence, String> =
+        withContext(Dispatchers.IO) {
+            val engine = engine() ?: return@withContext answer(context)
+            val prompt = visionPrompt(context)
+
+            val out = runCatching {
+                LlmInferenceSession.createFromOptions(
+                    engine,
+                    LlmInferenceSession.LlmInferenceSessionOptions.builder()
+                        .setTopK(40)
+                        .setTemperature(0.3f)
+                        .setGraphOptions(
+                            GraphOptions.builder().setEnableVisionModality(true).build(),
+                        )
+                        .build(),
+                ).use { session ->
+                    val started = System.currentTimeMillis()
+                    session.addQueryChunk(prompt)
+                    session.addImage(BitmapImageBuilder(frame).build())
+                    val text = session.generateResponse()
+                    Log.i(TAG, "saw and answered in ${System.currentTimeMillis() - started} ms")
+                    text
+                }
+            }.getOrElse {
+                Log.w(TAG, "vision unavailable, answering from text alone", it)
+                return@withContext answer(context)
+            }
+
+            val (evidence, text) = parseAnswer(out, context)
+            if (text.isBlank()) return@withContext answer(context)
+            // It genuinely looked. A [seen] claim here rests on a model that
+            // was handed the pixels, which is the one case where VISUAL_FACT is
+            // owed no further evidence than that.
+            evidence to text
+        }
+
+    /** The learner's question, told plainly that a photograph is attached. */
+    private fun visionPrompt(c: LearnerContext): String =
+        """
+        You are helping someone follow a repair guide on a phone, hands busy,
+        mid-job. A photograph of what their camera can see right now is
+        attached. Look at it before you answer.
+
+        ${renderContext(c).take(maxContextChars())}
+
+        Answer in English, in at most three sentences, plain and practical.
+        Where the photograph settles it, say what you can actually see -- the
+        kind of screwdriver tip, whether it matches the screw heads, where a
+        component sits in the frame. Be concrete: "that is a Phillips and the
+        base screws are Phillips too" is worth more than "it looks suitable".
+
+        Begin with exactly one tag:
+
+          [seen]       the photograph shows it. Use this when you looked and
+                       could tell.
+          [guide]      the guide text above says it.
+          $BEYOND    your own repair knowledge, neither of the above.
+          $UNSURE  the photograph is too dark, blurred or cropped to tell,
+                       or the thing asked about is not in it. Say what is in
+                       the way and what would settle it.
+
+        Never say you can see something you cannot make out. A learner will
+        put a screwdriver into a board on the strength of it.
+        """.trimIndent()
+
     private suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
         val engine = engine() ?: return@withContext ""
         val started = System.currentTimeMillis()
@@ -344,7 +458,12 @@ class Coach(
                 // of context, so this leaves room for the answer and not much
                 // more -- which is the point, a long answer is a worse answer
                 // when the reader has a screwdriver in one hand.
-                .setMaxTokens(2048)
+                .setMaxTokens(4096)
+                // Declared at engine build time, not per session, so the graph
+                // reserves room for the vision encoder. One image: the learner
+                // is asking about what is in front of them right now, and a
+                // second frame would only cost tokens.
+                .setMaxNumImages(1)
                 .setPreferredBackend(backend)
                 .build(),
         )
@@ -434,6 +553,29 @@ internal fun parseRewrite(raw: String, expected: Int): List<CoachStep?> {
     }
     return out.toList()
 }
+
+/**
+ * The name the coach gave the job, or empty.
+ *
+ * Empty is a fine answer and the caller keeps "New job". A guide named by a
+ * model that could not follow the session is worse than one honestly unnamed,
+ * which is why the prompt offers "Untitled job" as a way out and why anything
+ * that reads like a refusal is dropped here.
+ */
+internal fun parseTitle(raw: String): String {
+    val line = raw.lineSequence().firstOrNull { it.contains("TITLE", ignoreCase = true) }
+        ?: return ""
+    val text = line.substringAfter('|', "")
+        .trim()
+        .trim('*', '#', '-', '"', '\'', ' ', '|')
+    if (text.isBlank() || text.length > MAX_TITLE_CHARS) return ""
+    // A model that would not name it, saying so at length.
+    if (text.contains("untitled", true) || text.contains("cannot", true)) return ""
+    return text
+}
+
+/** Longer than this and the model wrote a sentence, not a name. */
+private const val MAX_TITLE_CHARS = 60
 
 /** The SOURCE column, or null when the model wrote something else there. */
 internal fun sourceToken(raw: String): Provenance? {

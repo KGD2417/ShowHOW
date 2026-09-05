@@ -20,6 +20,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,7 +83,12 @@ fun LibraryScreen(vm: ShowHowViewModel) {
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 96.dp),
                 ) {
                     items(guides, key = { it.id }) { g ->
-                        GuideCard(g, vm.sizeOnDisk(g.id)) { vm.go(Screen.Player(g.id)) }
+                        GuideCard(
+                            g = g,
+                            bytes = vm.sizeOnDisk(g.id),
+                            onOpen = { vm.go(Screen.Player(g.id)) },
+                            onDelete = { vm.deleteGuide(g.id) },
+                        )
                     }
                 }
             }
@@ -99,7 +105,7 @@ fun LibraryScreen(vm: ShowHowViewModel) {
 }
 
 @Composable
-private fun GuideCard(g: Guide, bytes: Long, onOpen: () -> Unit) {
+private fun GuideCard(g: Guide, bytes: Long, onOpen: () -> Unit, onDelete: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -132,7 +138,29 @@ private fun GuideCard(g: Guide, bytes: Long, onOpen: () -> Unit) {
             color = if (g.verified) Ink.green else Ink.amber,
         )
         Spacer(Modifier.height(2.dp))
-        Text(size(bytes), style = MaterialTheme.typography.bodyMedium, color = Ink.faint)
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(size(bytes), style = MaterialTheme.typography.bodyMedium, color = Ink.faint)
+            // Asks twice, because there is no undo and no bin -- a guide is a
+            // folder, and the second tap is the whole safety mechanism. Resets
+            // if you look away, so a stray tap cannot arm it and be forgotten.
+            var armed by remember(g.id) { mutableStateOf(false) }
+            LaunchedEffect(armed) {
+                if (armed) {
+                    kotlinx.coroutines.delay(3000)
+                    armed = false
+                }
+            }
+            Text(
+                if (armed) "Tap again to delete" else "Delete",
+                Modifier.clickable { if (armed) onDelete() else armed = true },
+                style = MaterialTheme.typography.labelLarge,
+                color = if (armed) Ink.red else Ink.faint,
+            )
+        }
     }
 }
 

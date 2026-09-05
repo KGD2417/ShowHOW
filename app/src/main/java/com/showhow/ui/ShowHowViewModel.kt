@@ -264,6 +264,32 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     /** dHash of the previous analysed frame, for "has the scene settled". */
     private var lastFrameHash: Long? = null
 
+    /**
+     * A copy of the most recent camera frame, for the coach to look at.
+     *
+     * Kept because the analyzer recycles its own bitmaps every frame -- by the
+     * time a learner has finished typing a question the frame they were asking
+     * about is long freed. One copy, downscaled, replaced each time and the old
+     * one recycled by hand: two of these alive at once is how this app used to
+     * be killed.
+     *
+     * Null when the camera is off, which is exactly when there is nothing to
+     * look at and the coach should answer from the guide alone.
+     */
+    @Volatile
+    private var lastFrame: Bitmap? = null
+
+    private fun keepFrame(frame: Bitmap) {
+        val scaled = runCatching {
+            val w = VISION_FRAME_PX
+            val h = (frame.height * (w.toFloat() / frame.width)).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(frame, w, h, true)
+        }.getOrNull() ?: return
+        val old = lastFrame
+        lastFrame = scaled
+        if (old !== scaled) runCatching { old?.recycle() }
+    }
+
     /** Detector labels from the photograph of the step being watched. */
     @Volatile
     private var expectedLabels: List<String> = emptyList()
@@ -361,6 +387,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                     // The cascade, on the frame that is already decoded and
                     // already upright. Arithmetic only; no model is woken.
                     updateStepCheck(frame, seen.boxes.map { b -> b.label })
+                    // And a copy for the coach, in case the learner asks about
+                    // what is in front of them.
+                    keepFrame(frame)
                 }
             }
         } finally {
@@ -770,12 +799,15 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // not per step: "phir isko nikaalo" only becomes "now lift the RAM
         // module out" if the model has already seen the three steps before it.
         _buildProgress.value = BuildStage.COACHING
-        val coached = coachSteps(steps, words)
+        val (coachTitle, coached) = coachSteps(steps, words)
 
         _buildProgress.value = BuildStage.SAVING
         val guide = Guide(
             id = id,
-            title = "New job",
+            // The coach names the job from what actually happened. Blank
+            // when there is no coach or it would not commit to one, and the
+            // expert renames it on the Review screen either way.
+            title = coachTitle.ifBlank { "New job" },
             lang = _lang.value,
             createdAt = System.currentTimeMillis(),
             steps = coached,
@@ -838,8 +870,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * a worse-looking guide and a true one. No model at all is the same path
      * with every line dropped, so nothing here needs a branch for it.
      */
-    private suspend fun coachSteps(steps: List<Step>, words: List<Word>): List<Step> {
-        if (!coach.present) return steps
+    private suspend fun coachSteps(steps: List<Step>, words: List<Word>): Pair<String, List<Step>> {
+        if (!coach.present) return "" to steps
         // The whole take in one call. Each step carries its clock, what the
         // expert said and what the detector reported seeing -- everything the
         // coach needs to notice that step 6 takes back step 5.
@@ -856,12 +888,13 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 correction = correctionFor(s, words, p),
             )
         }
-        val written = runCatching { coach.rewrite(jobFrom(steps), take) }
+        val out = runCatching { coach.rewrite(jobFrom(steps), take) }
             .getOrElse {
                 android.util.Log.w(TAG, "coach pass failed, keeping the raw steps", it)
-                emptyList()
+                com.showhow.ai.CoachGuide("", emptyList())
             }
-        return steps.mapIndexed { i, s ->
+        val written = out.steps
+        return out.title to steps.mapIndexed { i, s ->
             val c = written.getOrNull(i) ?: return@mapIndexed s
             s.copy(
                 title = c.title.ifBlank { s.title },
@@ -1120,6 +1153,20 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Save the working copy. Still a draft; nobody has said it is right yet. */
+    /**
+     * Delete a guide and everything in it.
+     *
+     * The take, the frames, the re-recorded clips and both copies of the JSON.
+     * There is no undo and no bin: a guide is a folder, and a phone that fills
+     * up with test recordings the night before a demo is a phone nobody can
+     * record on. The Library asks twice before calling this.
+     */
+    fun deleteGuide(id: String) {
+        guides.delete(id)
+        if (_editing.value?.id == id) _editing.value = null
+        refreshLibrary()
+    }
+
     fun saveEditing() {
         val g = _editing.value ?: return
         guides.save(g)
@@ -1222,7 +1269,14 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 seenNow = _detections.value.boxes.map { it.label },
                 toolWords = policy.value.toolWords,
             )
-            val (evidence, text) = coach.answer(context)
+            // With the camera on, the coach is handed the frame and can
+            // answer about the thing in the learner's hand -- which kind of
+            // screwdriver it is, whether it matches the screws. The detector
+            // never could: it knows COCO classes and has no label for one.
+            val frame = lastFrame
+            val (evidence, text) =
+                if (frame != null && !frame.isRecycled) coach.see(context, frame)
+                else coach.answer(context)
             if (text.isBlank()) {
                 // No model, or it failed. Say so rather than showing an empty
                 // card that looks like the app hung.
@@ -1453,6 +1507,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         motionJob?.cancel()
         policyRepo.stop()
         stopListening()
+        runCatching { lastFrame?.recycle() }
+        lastFrame = null
         runCatching { coach.close() }
         // RELEASE, the last rung of the model ladder. Native memory the GC
         // cannot see.
@@ -1467,6 +1523,14 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        /**
+         * How big a frame the coach is shown.
+         *
+         * Gemma 3n resizes to its own encoder input anyway, so anything larger
+         * is memory and copy time for nothing.
+         */
+        const val VISION_FRAME_PX = 512
+
         val WHITESPACE = Regex("\\s+")
 
         /** "Step 4" and nothing else. A title the app wrote, safe to rewrite. */
