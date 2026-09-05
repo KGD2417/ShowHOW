@@ -4,27 +4,48 @@
     "speechMarginDb": 9.0,
     "gateMinDb": -45.0,
     "gateMaxDb": -6.0,
+
     "pauseMs": 1200,
     "minUtteranceMs": 2500,
     "maxSteps": 12,
+
     "inHandEnterVar": 0.09,
     "inHandExitVar": 0.05,
     "roomLoudEnterDb": -26.0,
     "roomLoudExitDb": -32.0,
     "dwellMs": 400,
+    "speechUnclearConfThreshold": 0.55,
+    "speechUnclearWindowWords": 12,
+    "userFarFaceHeightPx": 90.0,
+
+    "detectMinScore": 0.55,
+
+    "coachContextChars": 4000,
+
+    "autoAdvanceMs": 2000,
+
+    "sceneAdviseMinSimilarity": 0.55,
+
+    "gestureDwellMs": 350,
+    "gestureMinConfidence": 0.6,
+
+    "confirmWindowMs": 2500,
+    "confirmMinLinkWords": 1,
+
     "linkWordsHi": [
-        "phir",
-        "ab",
-        "uske baad",
-        "next",
-        "then"
+        "फिर", "अब", "उसके बाद", "तब", "आगे", "बाद में", "इसके बाद",
+        "और अब", "और फिर", "पहले", "सबसे पहले", "अंत में", "आखिर में",
+        "phir", "ab", "uske baad", "tab", "aage", "baad mein", "iske baad",
+        "pehle", "sabse pehle", "ant mein", "aakhir mein"
     ],
     "linkWordsMr": [
-        "mag",
-        "ata",
-        "tyanantar",
-        "next",
-        "then"
+        "मग", "आता", "त्यानंतर", "नंतर", "पुढे", "यानंतर",
+        "आणि मग", "आणि आता", "पहिले", "शेवटी", "सर्वप्रथम",
+        "mag", "ata", "tyanantar", "nantar", "pudhe", "yanantar",
+        "pahile", "shevti", "sarvapratham"
     ],
-    "coachContextChars": 4000
+    "linkWordsEn": [
+        "then", "next", "after that", "now", "first", "finally",
+        "once", "after", "lastly", "and then", "now then"
+    ]
 }
