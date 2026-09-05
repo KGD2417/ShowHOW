@@ -10,7 +10,13 @@ data class Word(val text: String, val startMs: Long, val endMs: Long, val confid
 enum class Gesture { NONE, OPEN_PALM, FIST, THUMB_UP, POINT, SWIPE_LEFT, SWIPE_RIGHT }
 
 interface Asr {
-    suspend fun transcribe(wav: File): List<Word>
+    /**
+     * @param lang "en", "hi" or "mr". Not a hint and not a preference: a Vosk
+     *   model speaks one language and returns the nearest words it owns for
+     *   anything else, so the wrong value here produces confident nonsense
+     *   rather than an error or an empty list.
+     */
+    suspend fun transcribe(wav: File, lang: String): List<Word>
 }
 
 interface Captioner {

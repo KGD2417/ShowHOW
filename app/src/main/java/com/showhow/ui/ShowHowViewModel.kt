@@ -2,14 +2,13 @@ package com.showhow.ui
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.camera.core.ImageAnalysis
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
 import com.showhow.ai.DETECTOR_MODEL
-import com.showhow.ai.DetectionBox
-import com.showhow.ai.FakeCaptioner
+import com.showhow.ai.Detections
+import com.showhow.ai.DetectorCaptioner
 import com.showhow.ai.GESTURE_MODEL
 import com.showhow.ai.Gesture
 import com.showhow.ai.MediaPipeGestureSource
@@ -77,6 +76,14 @@ data class Answer(val stepIndex: Int, val transcript: String)
 class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
     private val policyRepo = PolicyRepository(app).also { it.start() }
+
+    /**
+     * Declared first on purpose. Everything below is handed a `{ policy.value }`
+     * lambda, and Kotlin initialises properties in source order -- a model
+     * source that reads its knobs while being constructed would find null.
+     */
+    val policy: StateFlow<Policy> = policyRepo.policy
+
     val guides = GuideStore(File(app.filesDir, "guides"))
 
     private val gestureSource = gestureSourceOrNone(
@@ -90,10 +97,10 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         minScore = { policy.value.detectMinScore },
     )
 
-    /** Only captions are still canned -- Gemma is phase 4, and optional. */
+    /** Nothing in here is canned any more. Gemma would only make it prettier. */
     val ai: AiStack = AiStack(
-        asr = VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODEL_DIR)),
-        captioner = FakeCaptioner(),
+        asr = VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODELS_DIR)),
+        captioner = DetectorCaptioner(detector),
         gestures = gestureSource,
         sceneCheck = RealSceneCheck(),
     )
@@ -113,8 +120,15 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * draws nothing at all. Every box on screen is a claim with a model behind
      * it; there is no decorative one.
      */
-    private val _detections = MutableStateFlow<List<DetectionBox>>(emptyList())
-    val detections: StateFlow<List<DetectionBox>> = _detections.asStateFlow()
+    private val _detections = MutableStateFlow(Detections())
+    val detections: StateFlow<Detections> = _detections.asStateFlow()
+
+    /**
+     * When the detector last saw anything, so a frame it happens to miss does
+     * not blink every box off and straight back on. A borderline score at ten
+     * frames a second reads as a fault in the app rather than what it is.
+     */
+    private var lastSeenAtMs = 0L
 
     /** Which delegate the detector landed on, for the telemetry panel. */
     val detectorDelegate: String get() = detector.delegateName
@@ -154,11 +168,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         sceneReference?.recycle()
         // A guide photo is a full-resolution JPEG and SceneHash only ever
         // looks at 32x32 of it, so decode it small and keep it small.
-        sceneReference = photo?.takeIf { it.exists() }?.let { f ->
-            runCatching {
-                BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = 8 })
-            }.getOrNull()
-        }
+        // Upright, or the scene check compares a sideways photo to an upright
+        // camera frame and reports that a correct workbench looks wrong.
+        sceneReference = photo?.let { decodeUpright(it, 8) }
         _sceneSimilarity.value = 0f
     }
 
@@ -175,7 +187,14 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             if (frame != null) {
                 val rotation = proxy.imageInfo.rotationDegrees
                 hands?.onFrame(frame, rotation)
-                _detections.value = detector.onFrame(frame, rotation)
+                val seen = detector.onFrame(frame, rotation)
+                val now = System.currentTimeMillis()
+                if (seen.boxes.isNotEmpty()) {
+                    lastSeenAtMs = now
+                    _detections.value = seen
+                } else if (now - lastSeenAtMs > DETECTION_HOLD_MS) {
+                    _detections.value = seen
+                }
                 reference?.let {
                     _sceneSimilarity.value =
                         runCatching { ai.sceneCheck.compare(frame, it) }.getOrDefault(0f)
@@ -186,8 +205,6 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             proxy.close()
         }
     }
-
-    val policy: StateFlow<Policy> = policyRepo.policy
 
     private val _screen = MutableStateFlow<Screen>(Screen.Library)
     val screen: StateFlow<Screen> = _screen.asStateFlow()
@@ -208,6 +225,28 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _editing = MutableStateFlow<Guide?>(null)
     val editing: StateFlow<Guide?> = _editing.asStateFlow()
+
+    /**
+     * The language of the next take, and of every take already recorded in it.
+     *
+     * Not a preference and not a guess. A Vosk model speaks one language, so
+     * this decides which model is loaded and therefore what words can come
+     * back at all -- recording English against the Hindi model does not fail,
+     * it returns Devanagari nonsense. The picker only ever offers languages
+     * whose model is actually on this phone.
+     */
+    private val _lang = MutableStateFlow(
+        VoskAsr.languagesPresent(File(app.filesDir, VoskAsr.MODELS_DIR)).firstOrNull() ?: "en",
+    )
+    val lang: StateFlow<String> = _lang.asStateFlow()
+
+    /** Languages this phone has a model for. Empty means ASR is off entirely. */
+    val languages: List<String> =
+        VoskAsr.languagesPresent(File(app.filesDir, VoskAsr.MODELS_DIR))
+
+    fun setLang(code: String) {
+        if (code in languages) _lang.value = code
+    }
 
     /** User override. Beats every other rule in the decision table. */
     private val _easyMode = MutableStateFlow(false)
@@ -299,7 +338,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     fun modelsPresent(): List<Pair<String, Boolean>> {
         val dir = getApplication<Application>().filesDir
         return listOf(
-            "vosk (speech)" to File(dir, VoskAsr.MODEL_DIR + "/conf/model.conf").isFile,
+            "vosk languages" to VoskAsr.languagesPresent(File(dir, VoskAsr.MODELS_DIR)).isNotEmpty(),
             "gesture" to File(dir, GESTURE_MODEL).isFile,
             "detector" to File(dir, DETECTOR_MODEL).isFile,
         )
@@ -346,7 +385,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun startLiveTranscript() {
         _liveTranscript.value = ""
-        val stream = (ai.asr as? VoskAsr)?.openStream() ?: return
+        val stream = (ai.asr as? VoskAsr)?.openStream(_lang.value) ?: return
         liveStream = stream
         pcmJob = viewModelScope.launch(Dispatchers.Default) {
             recorder.pcm.collect { chunk ->
@@ -410,11 +449,12 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // the sample log's clock are the same clock. An ASR that is off or
         // fails returns nothing, and the confirmer then abstains.
         _buildProgress.value = BuildStage.TRANSCRIBING
-        val words = runCatching { ai.asr.transcribe(guides.takeFile(id)) }.getOrDefault(emptyList())
+        val words = runCatching { ai.asr.transcribe(guides.takeFile(id), _lang.value) }
+            .getOrDefault(emptyList())
 
         _buildProgress.value = BuildStage.CUTTING
         val confirmer = LinkWordConfirmer(
-            p.linkWords(LANG),
+            p.linkWords(_lang.value),
             words.map { SpokenWord(it.text, it.startMs) },
             p.confirmWindowMs,
             p.confirmMinLinkWords,
@@ -448,7 +488,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         val guide = Guide(
             id = id,
             title = "New job",
-            lang = LANG,
+            lang = _lang.value,
             createdAt = System.currentTimeMillis(),
             steps = steps,
         )
@@ -714,11 +754,10 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        // ponytail: guides are Hindi until the Show screen offers the choice,
-        // which is why linkWordsMr is still dead. One StateFlow when it does.
-        const val LANG = "hi"
-
         /** A WAV with only a header in it is a recording that never started. */
         const val WAV_HEADER_BYTES = 44L
+
+        /** How long a box survives a frame the detector missed it in. */
+        const val DETECTION_HOLD_MS = 500L
     }
 }

@@ -26,11 +26,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.showhow.ai.DetectionBox
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
+import com.showhow.ai.Detections
+import java.io.File
 
 /** The rounded chip the header rows are made of. */
 @Composable
@@ -183,27 +188,52 @@ private const val BARS = 5
  * because a box with a number beside it is a claim.
  */
 @Composable
-fun DetectionOverlay(boxes: List<DetectionBox>, modifier: Modifier = Modifier) {
-    if (boxes.isEmpty()) return
-    BoxWithConstraints(modifier.fillMaxSize()) {
+fun DetectionOverlay(detections: Detections, modifier: Modifier = Modifier) {
+    if (detections.boxes.isEmpty()) return
+    BoxWithConstraints(modifier.fillMaxSize().clipToBounds()) {
         val w = maxWidth
         val h = maxHeight
-        for (b in boxes) {
+
+        // PreviewView is FILL_CENTER: it scales the frame to *cover* the view
+        // and throws away the overflow. Mapping 0..1 of the frame onto 0..1 of
+        // the view ignores that crop, which is why a 4:3 frame on a 9:20 screen
+        // put the box for a person on top of a laptop. Redo the same cover-fit
+        // here so a box lands where the thing it names actually is.
+        val viewAspect = (w / h).coerceAtLeast(0.01f)
+        val frameAspect = detections.frameAspect.coerceAtLeast(0.01f)
+        val shownW: Dp
+        val shownH: Dp
+        if (frameAspect > viewAspect) {
+            shownH = h
+            shownW = h * frameAspect
+        } else {
+            shownW = w
+            shownH = w / frameAspect
+        }
+        val offX = (w - shownW) / 2
+        val offY = (h - shownH) / 2
+
+        for (b in detections.boxes) {
+            val left = offX + shownW * b.left
+            val top = offY + shownH * b.top
+            val boxW = shownW * (b.right - b.left).coerceAtLeast(0f)
+            val boxH = shownH * (b.bottom - b.top).coerceAtLeast(0f)
             Box(
                 Modifier
-                    .offset(x = w * b.left.coerceIn(0f, 1f), y = h * b.top.coerceIn(0f, 1f))
-                    .width(w * (b.right - b.left).coerceIn(0f, 1f))
-                    .height(h * (b.bottom - b.top).coerceIn(0f, 1f))
+                    .offset(x = left, y = top)
+                    .width(boxW)
+                    .height(boxH)
                     .border(1.5.dp, Ink.green, RoundedCornerShape(2.dp)),
             ) {
                 Text(
                     b.label + " " + "%.2f".format(b.score),
                     Modifier
-                        .offset(y = (-9).dp)
                         .background(Ink.green)
                         .padding(horizontal = 4.dp, vertical = 1.dp),
                     color = Color.Black,
                     style = Mono,
+                    maxLines = 1,
+                    softWrap = false,
                 )
             }
         }
@@ -219,6 +249,10 @@ data class TelemetryRow(val value: String, val label: String, val delegate: Stri
  * It exists to answer the only question a judge really asks about an offline
  * app, which is whether any of this is running here, so every line is a live
  * number or a named delegate and never a label on its own.
+ *
+ * Every line is one line. On the demo phone the labels wrapped -- "recognizer"
+ * came out as "recog / nizer" -- which turned the thing that proves the app is
+ * serious into the thing that makes it look unfinished.
  */
 @Composable
 fun Telemetry(rows: List<TelemetryRow>, modifier: Modifier = Modifier) {
@@ -226,14 +260,14 @@ fun Telemetry(rows: List<TelemetryRow>, modifier: Modifier = Modifier) {
         modifier
             .clip(RoundedCornerShape(6.dp))
             .background(Ink.scrim)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.End,
     ) {
         for (r in rows) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(r.value, style = Mono, color = Ink.dim)
+                Text(r.value, style = Mono, color = Ink.dim, maxLines = 1, softWrap = false)
                 Spacer(Modifier.width(6.dp))
-                Text(r.label, style = Mono, color = Ink.text)
+                Text(r.label, style = Mono, color = Ink.text, maxLines = 1, softWrap = false)
                 r.delegate?.let {
                     Spacer(Modifier.width(6.dp))
                     Text(
@@ -244,6 +278,8 @@ fun Telemetry(rows: List<TelemetryRow>, modifier: Modifier = Modifier) {
                             .padding(horizontal = 4.dp),
                         style = Mono,
                         color = Ink.text,
+                        maxLines = 1,
+                        softWrap = false,
                     )
                 }
             }
@@ -255,4 +291,27 @@ fun Telemetry(rows: List<TelemetryRow>, modifier: Modifier = Modifier) {
 fun clock(ms: Long): String {
     val s = (ms / 1000).coerceAtLeast(0)
     return "%02d:%02d".format(s / 60, s % 60)
+}
+
+/**
+ * Decode a photo the right way up.
+ *
+ * CameraX records which way the phone was held as EXIF metadata rather than by
+ * rotating the pixels, and BitmapFactory ignores EXIF -- so every step photo
+ * taken in portrait came back on its side. ImageDecoder honours it.
+ *
+ * Software allocation is not optional: the scene check reads pixels back out
+ * with getPixels, and a hardware bitmap cannot do that.
+ *
+ * @param sample how much to downscale by. The photos are already capped at
+ *   1280x960 and nothing here is shown larger than a phone.
+ */
+fun decodeUpright(file: File, sample: Int): Bitmap? {
+    if (!file.exists()) return null
+    return runCatching {
+        ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { decoder, _, _ ->
+            decoder.setTargetSampleSize(sample.coerceAtLeast(1))
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+        }
+    }.getOrNull()
 }

@@ -1,6 +1,7 @@
 package com.showhow.ui
 
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -16,7 +17,10 @@ import androidx.media3.common.util.UnstableApi
 fun ShowHowHost(vm: ShowHowViewModel = viewModel()) {
     val screen by vm.screen.collectAsStateWithLifecycle()
 
-    Surface(Modifier.fillMaxSize()) {
+    // targetSdk 36 means Android draws this app edge to edge whether it asks to
+    // or not, so every screen would otherwise start underneath the status bar
+    // and end underneath the gesture pill. One inset here beats five.
+    Surface(Modifier.fillMaxSize().safeDrawingPadding()) {
         when (val s = screen) {
             Screen.Library -> LibraryScreen(vm)
             Screen.Show -> ShowScreen(vm)

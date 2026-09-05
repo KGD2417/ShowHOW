@@ -48,8 +48,12 @@ class MediaPipeGestureSource(
     )
 
     private var recognizer: GestureRecognizer? = null
-    private var latch = DwellLatch<Gesture>(policy().gestureDwellMs)
-    private var dwellMs = policy().gestureDwellMs
+
+    // Not read from the policy here. A constructor that calls a lambda handed
+    // to it depends on the caller having finished building itself, which is a
+    // rule nobody remembers -- the first frame rebuilds this anyway.
+    private var dwellMs = -1L
+    private var latch = DwellLatch<Gesture>(0)
 
     @Volatile
     private var dead = false
@@ -74,7 +78,8 @@ class MediaPipeGestureSource(
         }
         val p = policy()
         if (p.gestureDwellMs != dwellMs) {
-            // policy.json changed under us. This is the whole point of it.
+            // First frame, or policy.json changed under us. The second is the
+            // whole point of policy.json.
             dwellMs = p.gestureDwellMs
             latch = DwellLatch(dwellMs)
         }

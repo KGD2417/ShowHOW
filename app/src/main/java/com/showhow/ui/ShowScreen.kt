@@ -1,6 +1,7 @@
 package com.showhow.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,9 +44,10 @@ fun ShowScreen(vm: ShowHowViewModel) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val debug by vm.debug.collectAsStateWithLifecycle()
-    val boxes by vm.detections.collectAsStateWithLifecycle()
+    val detections by vm.detections.collectAsStateWithLifecycle()
     val live by vm.liveTranscript.collectAsStateWithLifecycle()
     val policy by vm.policy.collectAsStateWithLifecycle()
+    val lang by vm.lang.collectAsStateWithLifecycle()
 
     val controller = remember { CameraController(context) }
     val preview = remember { controller.previewView() }
@@ -63,7 +65,7 @@ fun ShowScreen(vm: ShowHowViewModel) {
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(factory = { preview }, modifier = Modifier.fillMaxSize())
-        DetectionOverlay(boxes)
+        DetectionOverlay(detections)
 
         // --- top strip: what the microphone is doing right now ---
         Row(
@@ -157,7 +159,10 @@ fun ShowScreen(vm: ShowHowViewModel) {
                 color = if (live.isBlank()) Ink.dim else Ink.text,
             )
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
+            if (!debug.recording) LanguagePicker(vm.languages, lang, vm::setLang)
+
+            Spacer(Modifier.height(12.dp))
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -188,3 +193,46 @@ fun ShowScreen(vm: ShowHowViewModel) {
         }
     }
 }
+
+/**
+ * Pick the language before the take, not after.
+ *
+ * This is not a preference. Each language is a separate recogniser model, and a
+ * model handed the wrong language does not fail -- it returns the nearest words
+ * it owns, which is how an English sentence came back as Devanagari. So the
+ * choice has to be made while the microphone is still closed.
+ *
+ * Only languages with a model on this phone are offered. An option that cannot
+ * work is not an option.
+ */
+@Composable
+private fun LanguagePicker(available: List<String>, current: String, onPick: (String) -> Unit) {
+    if (available.isEmpty()) {
+        Text(
+            "No speech model on this phone, so steps come from pauses alone.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Ink.amber,
+        )
+        return
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Speaking", style = MaterialTheme.typography.bodySmall, color = Ink.dim)
+        Spacer(Modifier.size(10.dp))
+        for (code in available) {
+            val here = code == current
+            Text(
+                NAMES[code] ?: code,
+                Modifier
+                    .padding(end = 8.dp)
+                    .clip(CircleShape)
+                    .background(if (here) Ink.blue else Ink.cardHi)
+                    .clickable { onPick(code) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                color = if (here) Color.White else Ink.dim,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
+}
+
+private val NAMES = mapOf("en" to "English", "hi" to "हिंदी", "mr" to "मराठी")

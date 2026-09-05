@@ -62,8 +62,13 @@ class AudioRecorder {
     suspend fun record(out: File): Unit = withContext(Dispatchers.IO) {
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
         val bufBytes = maxOf(minBuf, HOP_SAMPLES * 2 * 4)
+        // VOICE_RECOGNITION, not MIC. It is the input path the platform tunes
+        // for a recognizer -- echo cancellation and noise suppression on, the
+        // automatic gain control that pumps a level meter off -- and on the
+        // demo phone it is the difference between Vosk hearing a sentence and
+        // Vosk hearing a room.
         val rec = AudioRecord(
-            MediaRecorder.AudioSource.MIC, SAMPLE_RATE, CHANNEL, ENCODING, bufBytes,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, CHANNEL, ENCODING, bufBytes,
         )
         val buf = ShortArray(HOP_SAMPLES)
         val chunk = ShortArray(CHUNK_SAMPLES)

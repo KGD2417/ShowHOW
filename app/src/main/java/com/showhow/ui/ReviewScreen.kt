@@ -214,17 +214,7 @@ private fun StepCard(
 @Composable
 private fun Thumbnail(folder: File, name: String) {
     val bmp = remember(folder.path, name) {
-        val f = File(folder, name)
-        if (name.isNotBlank() && f.exists()) {
-            runCatching {
-                android.graphics.BitmapFactory.decodeFile(
-                    f.path,
-                    android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 },
-                )
-            }.getOrNull()
-        } else {
-            null
-        }
+        if (name.isBlank()) null else decodeUpright(File(folder, name), 8)
     }
     Box(
         Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)).background(Ink.cardHi),

@@ -1,11 +1,14 @@
 package com.showhow.capture
 
 import android.content.Context
+import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -23,6 +26,14 @@ import kotlinx.coroutines.suspendCancellableCoroutine
  * check and gestures, and a still photo per step.
  */
 class CameraController(private val context: Context) {
+
+    private companion object {
+        /** Big enough to read on a phone, small enough to keep a guide portable. */
+        val PHOTO_SIZE = Size(1280, 960)
+
+        /** What the gesture and object models actually want. */
+        val ANALYSIS_SIZE = Size(640, 480)
+    }
 
     private var provider: ProcessCameraProvider? = null
     private var capture: ImageCapture? = null
@@ -55,6 +66,11 @@ class CameraController(private val context: Context) {
 
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                // The models downscale their input anyway, so a 12 MP frame is
+                // 12 MP of copying and colour conversion thrown away every
+                // frame. This is the single cheapest thing that keeps gesture
+                // latency sane on an old phone.
+                .setResolutionSelector(resolution(ANALYSIS_SIZE))
                 .build()
                 .also { a ->
                     analyzer?.let {
@@ -66,6 +82,11 @@ class CameraController(private val context: Context) {
 
             val still = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                // A step photo is looked at inside a phone-width card. At full
+                // sensor resolution the first real take on the demo phone put
+                // 4.3 MB on disk per step, which is 50 MB for a ninety second
+                // guide and makes "a guide you can drag between phones" a lie.
+                .setResolutionSelector(resolution(PHOTO_SIZE))
                 .build()
             capture = still
 
@@ -95,6 +116,14 @@ class CameraController(private val context: Context) {
             },
         )
     }
+
+    /** Nearest available size, then whatever the camera has if it cannot. */
+    private fun resolution(size: Size): ResolutionSelector =
+        ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                ResolutionStrategy(size, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER),
+            )
+            .build()
 
     fun unbind() {
         provider?.unbindAll()

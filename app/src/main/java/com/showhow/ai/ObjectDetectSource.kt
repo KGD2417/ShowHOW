@@ -26,6 +26,19 @@ data class DetectionBox(
 )
 
 /**
+ * A frame's worth of boxes, plus the shape of the frame they came from.
+ *
+ * The aspect ratio travels with them because the viewfinder centre-crops: the
+ * preview scales the frame to cover the view and throws the overflow away, so
+ * anything drawing these has to crop the same way or every box lands somewhere
+ * the object is not.
+ */
+data class Detections(
+    val boxes: List<DetectionBox> = emptyList(),
+    val frameAspect: Float = 4f / 3f,
+)
+
+/**
  * What is in front of the camera, from MediaPipe's object detector.
  *
  * This exists for one reason: the boxes on screen have to be claims the app can
@@ -67,8 +80,8 @@ class ObjectDetectSource(
      *   way up. MediaPipe reports coordinates in the *rotated* image, which is
      *   why the normalisation below swaps width and height at 90 and 270.
      */
-    fun onFrame(bitmap: Bitmap, rotationDegrees: Int): List<DetectionBox> {
-        val d = detector() ?: return emptyList()
+    fun onFrame(bitmap: Bitmap, rotationDegrees: Int): Detections {
+        val d = detector() ?: return Detections()
         val result = runCatching {
             d.detect(
                 BitmapImageBuilder(bitmap).build(),
@@ -77,7 +90,7 @@ class ObjectDetectSource(
         }.getOrElse {
             Log.w(TAG, "detect failed, boxes are off", it)
             dead = true
-            return emptyList()
+            return Detections()
         }
 
         val turned = rotationDegrees % 180 != 0
@@ -85,7 +98,7 @@ class ObjectDetectSource(
         val h = (if (turned) bitmap.width else bitmap.height).toFloat().coerceAtLeast(1f)
         val floor = minScore()
 
-        return result.detections().mapNotNull { det ->
+        val boxes = result.detections().mapNotNull { det ->
             val top = det.categories().maxByOrNull { it.score() } ?: return@mapNotNull null
             if (top.score() < floor) return@mapNotNull null
             val r = det.boundingBox()
@@ -98,6 +111,7 @@ class ObjectDetectSource(
                 bottom = r.bottom / h,
             )
         }
+        return Detections(boxes, w / h)
     }
 
     /** LOAD -> VERIFY -> INIT, once, down the delegate ladder. Each fall logged. */

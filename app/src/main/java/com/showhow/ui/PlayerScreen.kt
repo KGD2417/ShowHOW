@@ -1,6 +1,5 @@
 package com.showhow.ui
 
-import android.graphics.BitmapFactory
 import androidx.annotation.OptIn
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -84,7 +83,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     val mode by vm.mode.collectAsStateWithLifecycle()
     val reason by vm.reason.collectAsStateWithLifecycle()
     val similarity by vm.sceneSimilarity.collectAsStateWithLifecycle()
-    val boxes by vm.detections.collectAsStateWithLifecycle()
+    val detections by vm.detections.collectAsStateWithLifecycle()
     val policy by vm.policy.collectAsStateWithLifecycle()
 
     var index by remember { mutableIntStateOf(0) }
@@ -210,7 +209,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
             ) {
                 if (cameraOn) {
                     LiveView(vm, owner)
-                    DetectionOverlay(boxes)
+                    DetectionOverlay(detections)
                     ShouldLookLike(photo)
                 } else {
                     StepPhoto(photo)
@@ -593,18 +592,7 @@ private fun MissingGuide(guideId: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun decode(f: File, sample: Int) = remember(f.path) {
-    if (f.exists()) {
-        runCatching {
-            BitmapFactory.decodeFile(
-                f.path,
-                BitmapFactory.Options().apply { inSampleSize = sample },
-            )
-        }.getOrNull()
-    } else {
-        null
-    }
-}
+private fun decode(f: File, sample: Int) = remember(f.path) { decodeUpright(f, sample) }
 
 /**
  * Play one step: its own re-recorded clip if it has one, otherwise the slice of
