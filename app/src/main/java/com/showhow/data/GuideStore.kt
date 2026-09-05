@@ -20,6 +20,17 @@ class GuideStore(private val root: File) {
 
     fun guideFile(id: String): File = File(dir(id), "guide.json")
 
+    /**
+     * The last version an expert verified, kept beside the working copy.
+     *
+     * Two files because the expert edits after verifying -- that is the whole
+     * point of a Review screen -- and a half-finished edit must not be what a
+     * learner is following in the meantime. Saving a draft writes only
+     * guide.json; this file changes on verification alone, so the Player always
+     * has a checked guide to fall back to if one was ever checked.
+     */
+    fun verifiedFile(id: String): File = File(dir(id), "guide.verified.json")
+
     fun takeFile(id: String): File = File(dir(id), "take.wav")
 
     /**
@@ -95,6 +106,32 @@ class GuideStore(private val root: File) {
     fun save(guide: Guide) {
         guideFile(guide.id).writeText(Policy.json.encodeToString(Guide.serializer(), guide))
     }
+
+    /**
+     * Save, and record this exact version as the one the expert stood behind.
+     *
+     * Both files, so the working copy and the verified copy agree at the moment
+     * of verification and only drift once someone edits again.
+     */
+    fun saveVerified(guide: Guide) {
+        val stamped = guide.copy(verifiedAt = System.currentTimeMillis())
+        save(stamped)
+        verifiedFile(guide.id).writeText(Policy.json.encodeToString(Guide.serializer(), stamped))
+    }
+
+    /**
+     * What a learner should be given: the verified guide if one was ever
+     * verified, otherwise the working copy.
+     *
+     * The Player calls this and never [load]. A draft is a fine thing to follow
+     * when it is all there is -- an unverified guide still beats no guide -- but
+     * it must never quietly replace a version an expert checked just because
+     * someone started editing and walked away.
+     */
+    fun loadForLearner(id: String): Guide? =
+        runCatching { Policy.json.decodeFromString(Guide.serializer(), verifiedFile(id).readText()) }
+            .getOrNull()
+            ?: load(id)
 
     fun delete(id: String) {
         File(root, id).deleteRecursively()

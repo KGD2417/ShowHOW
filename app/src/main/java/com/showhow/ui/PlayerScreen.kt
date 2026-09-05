@@ -80,7 +80,10 @@ import kotlinx.coroutines.launch
 fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
-    val guide = remember(guideId) { vm.guides.load(guideId) }
+    // The verified version when one exists, the working copy when it does not.
+    // A learner must never be handed a half-finished edit of a guide an expert
+    // has already checked.
+    val guide = remember(guideId) { vm.guides.loadForLearner(guideId) }
     val mode by vm.mode.collectAsStateWithLifecycle()
     val reason by vm.reason.collectAsStateWithLifecycle()
     val similarity by vm.sceneSimilarity.collectAsStateWithLifecycle()

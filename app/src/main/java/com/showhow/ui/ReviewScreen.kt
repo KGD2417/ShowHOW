@@ -98,9 +98,14 @@ fun ReviewScreen(vm: ShowHowViewModel, guideId: String) {
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "Name it, check the steps, then save. Joining or splitting takes two taps.",
+                if (g.verified) {
+                    "Verified. Any edit puts it back to a draft until you verify again."
+                } else {
+                    "Draft. Name it, fix the steps, then verify - learners are given " +
+                        "the verified version."
+                },
                 style = MaterialTheme.typography.bodyMedium,
-                color = Ink.dim,
+                color = if (g.verified) Ink.green else Ink.dim,
             )
             Spacer(Modifier.height(16.dp))
 
@@ -115,6 +120,12 @@ fun ReviewScreen(vm: ShowHowViewModel, guideId: String) {
                         step = s,
                         folder = vm.guides.dir(g.id),
                         recording = reRecording == i,
+                        canMoveUp = i > 0,
+                        canMoveDown = i < g.steps.lastIndex,
+                        canDelete = g.steps.size > 1,
+                        onEdit = { text -> vm.editStep(i, text) },
+                        onMove = { delta -> vm.moveStep(i, delta) },
+                        onDelete = { vm.deleteStep(i) },
                         onPlay = {
                             play(player, vm.guides.dir(g.id), vm.guides.takeFile(g.id), s)
                         },
@@ -128,9 +139,13 @@ fun ReviewScreen(vm: ShowHowViewModel, guideId: String) {
         }
 
         WideButton(
-            "Save guide",
+            if (g.verified) "Verified - save changes" else "This is right - verify",
             onClick = {
-                vm.saveEditing()
+                // Nothing may block this. A coach warning, a GENERAL provenance
+                // or a step with no photograph are all a model's opinion, and a
+                // model does not get a vote on whether an expert may sign off
+                // their own work.
+                vm.verifyEditing()
                 vm.go(Screen.Library)
             },
             modifier = Modifier
@@ -146,6 +161,12 @@ private fun StepCard(
     step: Step,
     folder: File,
     recording: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    canDelete: Boolean,
+    onEdit: (String) -> Unit,
+    onMove: (Int) -> Unit,
+    onDelete: () -> Unit,
     onPlay: () -> Unit,
     onSplit: () -> Unit,
     onReRecord: () -> Unit,
@@ -167,13 +188,46 @@ private fun StepCard(
         Thumbnail(folder, step.photo)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                // What was actually said beats a caption a model guessed at, so
-                // the transcript leads and the caption only fills a gap.
-                step.transcript.ifBlank { step.caption.ifBlank { step.title } },
-                style = MaterialTheme.typography.bodyLarge,
-                color = Ink.text,
-            )
+            // The line a learner will read, and the expert's to correct. Typing
+            // here writes Step.instruction and never the transcript: the
+            // transcript is the record of what was said out loud and stays it.
+            val shown = step.instruction.ifBlank { step.transcript.ifBlank { step.caption } }
+            Box {
+                BasicTextField(
+                    value = shown,
+                    onValueChange = onEdit,
+                    textStyle = TextStyle(color = Ink.text, fontSize = 16.sp),
+                    cursorBrush = SolidColor(Ink.blue),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (shown.isBlank()) {
+                    Text("Say what happens in this step", color = Ink.faint, fontSize = 16.sp)
+                }
+            }
+            // What the expert actually said, kept in view beneath their edit, so
+            // a correction can be checked against the original instead of
+            // replacing it silently.
+            if (step.instruction.isNotBlank() && step.transcript.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "you said: " + step.transcript,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Ink.faint,
+                )
+            }
+            if (step.aside) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "marked as an aside, not part of the job",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Ink.dim,
+                )
+            }
+            step.warning?.takeIf { it.isNotBlank() }?.let {
+                Spacer(Modifier.height(4.dp))
+                // Advice, never a gate. It does not stop verification.
+                Text(it, style = MaterialTheme.typography.labelSmall, color = Ink.amber)
+            }
             if (recording) {
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -212,13 +266,24 @@ private fun StepCard(
                         color = Ink.dim,
                     )
                 }
-                Row {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (canMoveUp) {
+                        TextButton(onClick = { onMove(-1) }) { Text("^", color = Ink.dim) }
+                    }
+                    if (canMoveDown) {
+                        TextButton(onClick = { onMove(1) }) { Text("v", color = Ink.dim) }
+                    }
                     TextButton(onClick = onSplit) { Text("Split", color = Ink.blue) }
                     TextButton(onClick = onReRecord) {
                         Text(
                             if (recording) "Stop" else "Re-record",
                             color = if (recording) Ink.red else Ink.blue,
                         )
+                    }
+                    // Never offered for the last step: a guide with no steps is
+                    // one the Player refuses to open.
+                    if (canDelete) {
+                        TextButton(onClick = onDelete) { Text("Delete", color = Ink.red) }
                     }
                 }
             }

@@ -123,6 +123,15 @@ private fun GuideCard(g: Guide, bytes: Long, onOpen: () -> Unit) {
             color = Ink.dim,
         )
         Spacer(Modifier.height(2.dp))
+        // Says whether an expert has been through it, and nothing about how
+        // good it is. A draft is still worth opening; it just has nobody's name
+        // on it yet.
+        Text(
+            if (g.verified) "verified by the expert" else "draft - not checked yet",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (g.verified) Ink.green else Ink.amber,
+        )
+        Spacer(Modifier.height(2.dp))
         Text(size(bytes), style = MaterialTheme.typography.bodyMedium, color = Ink.faint)
     }
 }

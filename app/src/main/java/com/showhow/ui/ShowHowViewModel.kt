@@ -43,6 +43,8 @@ import com.showhow.data.Guide
 import com.showhow.data.GuideStore
 import com.showhow.data.PolicyRepository
 import com.showhow.data.Step
+import com.showhow.data.asDraft
+import com.showhow.data.Provenance
 import com.showhow.data.provenanceOf
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -779,7 +781,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun setTitle(text: String) {
         val g = _editing.value ?: return
-        _editing.value = g.copy(title = text)
+        _editing.value = g.copy(title = text).asDraft()
     }
 
     private fun openForReview(id: String) {
@@ -831,11 +833,90 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    /** Renumber and retitle, so index, title and position never disagree. */
+    /**
+     * Renumber, and put the guide back to a draft.
+     *
+     * Renumbers [Step.index] only. It used to overwrite every title with
+     * "Step N", which meant one Split or Join threw away every title the coach
+     * had written for the whole guide -- so a title is now replaced only when
+     * it is blank or is itself a positional placeholder that has gone stale.
+     *
+     * Every edit lands here, which is exactly why the draft reset lives here:
+     * a verified tick on content the expert has not re-read is the app
+     * vouching for something nobody checked.
+     */
     private fun commit(steps: List<Step>) {
         val g = _editing.value ?: return
         _editing.value = g.copy(
-            steps = steps.mapIndexed { i, s -> s.copy(index = i, title = "Step ${i + 1}") },
+            steps = steps.mapIndexed { i, s ->
+                val placeholder = s.title.isBlank() || PLACEHOLDER_TITLE.matches(s.title)
+                s.copy(index = i, title = if (placeholder) "Step ${i + 1}" else s.title)
+            },
+        ).asDraft()
+    }
+
+    /**
+     * Remove a step from the guide.
+     *
+     * The step goes; its slice of the take does not. take.wav is untouched and
+     * every other step keeps its own clock, so what is lost is a step in the
+     * guide and never a second of what the expert actually recorded. That gap
+     * in the timeline is simply never played, which is the correct outcome for
+     * a step someone deliberately deleted.
+     */
+    fun deleteStep(index: Int) {
+        val g = _editing.value ?: return
+        if (index !in g.steps.indices) return
+        // The last step cannot go: a guide with no steps is a guide the Player
+        // refuses to open, and deleting your way into that is not an edit.
+        if (g.steps.size <= 1) return
+        commit(g.steps.toMutableList().apply { removeAt(index) })
+    }
+
+    /**
+     * Move a step up or down the guide.
+     *
+     * The order a guide is read in and the order it was recorded in are
+     * different things -- an expert doubles back, does the fiddly bit first
+     * because the glue is drying, explains a thing after doing it. Each step
+     * keeps its own start and end, so its audio and its photograph travel with
+     * it and only the reading order changes.
+     */
+    fun moveStep(index: Int, delta: Int) {
+        val g = _editing.value ?: return
+        val to = index + delta
+        if (index !in g.steps.indices || to !in g.steps.indices) return
+        commit(g.steps.toMutableList().apply { add(to, removeAt(index)) })
+    }
+
+    /**
+     * The expert's own words for a step, typed rather than spoken.
+     *
+     * Writes [Step.instruction] and never [Step.transcript]. The transcript is
+     * the record of what was said out loud and stays the record; this is the
+     * expert correcting how the step reads, which is a different thing and
+     * deserves its own field.
+     *
+     * The source becomes EXPERT because it now is -- a human typed it. This is
+     * the one path in the app that may raise a provenance rather than lower it,
+     * and it may because the person doing the typing is the expert themselves.
+     */
+    fun editStep(index: Int, text: String) {
+        val g = _editing.value ?: return
+        val s = g.steps.getOrNull(index) ?: return
+        commit(
+            g.steps.toMutableList().apply {
+                set(
+                    index,
+                    s.copy(
+                        instruction = text,
+                        instructionSource =
+                            if (text.isBlank()) Provenance.UNKNOWN else Provenance.EXPERT,
+                        // Typing a step over is also a decision that it belongs.
+                        aside = if (text.isBlank()) s.aside else false,
+                    ),
+                )
+            },
         )
     }
 
@@ -883,9 +964,27 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         saveEditing()
     }
 
+    /** Save the working copy. Still a draft; nobody has said it is right yet. */
     fun saveEditing() {
         val g = _editing.value ?: return
         guides.save(g)
+        refreshLibrary()
+    }
+
+    /**
+     * The expert puts their name to this guide.
+     *
+     * Nothing may prevent it. Not a step the coach was unsure about, not a
+     * warning, not a GENERAL provenance, not a step with no photograph -- every
+     * one of those is a model's opinion, and a model does not get a vote on
+     * whether a human may sign off their own work. The only thing that stops
+     * verification is having nothing to verify.
+     */
+    fun verifyEditing() {
+        val g = _editing.value ?: return
+        if (g.steps.isEmpty()) return
+        guides.saveVerified(g)
+        _editing.value = guides.load(g.id) ?: g
         refreshLibrary()
     }
 
@@ -1210,6 +1309,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        /** "Step 4" and nothing else. A title the app wrote, safe to rewrite. */
+        val PLACEHOLDER_TITLE = Regex("""Step \d+""")
+
         const val TAG = "ShowHow"
 
         /** A WAV with only a header in it is a recording that never started. */

@@ -124,4 +124,34 @@ data class Guide(
     /** The single narration take every step slices out of. */
     val take: String = "take.wav",
     val steps: List<Step> = emptyList(),
-)
+    /**
+     * When the expert last said "yes, this is right", or 0 for a draft.
+     *
+     * A timestamp rather than a boolean because it costs the same and answers
+     * "when", which is the question anyone asks second. Zero is the default, so
+     * every guide written before this existed reads as a draft -- which is
+     * true, since nobody was ever asked to check them.
+     *
+     * What it is not: a quality score. The coach's doubts live in
+     * [Step.warning] and its confidence in [Step.instructionSource], and
+     * neither has any say here. Verification is an expert putting their name to
+     * a guide, and a model is not allowed a vote on whether they may.
+     */
+    val verifiedAt: Long = 0,
+) {
+    /** True once an expert has checked this guide. See [verifiedAt]. */
+    val verified: Boolean get() = verifiedAt > 0
+}
+
+/**
+ * The same guide, back to being a draft.
+ *
+ * Every edit goes through here, because a verified badge on content nobody has
+ * re-read is worse than no badge at all -- it is the app vouching for a change
+ * the expert made and never looked at again. Editing a verified guide always
+ * costs the tick, and earning it back costs one tap.
+ *
+ * Already a draft is left alone rather than copied, so this is free to call on
+ * every keystroke.
+ */
+fun Guide.asDraft(): Guide = if (verifiedAt == 0L) this else copy(verifiedAt = 0)
