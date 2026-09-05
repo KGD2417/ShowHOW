@@ -129,6 +129,13 @@ data class Policy(
             ignoreUnknownKeys = true
             prettyPrint = true
             encodeDefaults = true
+            // ...and neither is an unknown *value*. This also decodes guides,
+            // and GuideStore.load returns null on any parse failure -- so
+            // without this, one enum constant a future build adds would cost
+            // the reader the entire guide rather than one label on one step.
+            // Coercion needs a default to fall back to, which every such field
+            // has.
+            coerceInputValues = true
         }
 
         fun parse(text: String): Policy = json.decodeFromString(serializer(), text)

@@ -39,6 +39,7 @@ import com.showhow.data.Guide
 import com.showhow.data.GuideStore
 import com.showhow.data.PolicyRepository
 import com.showhow.data.Step
+import com.showhow.data.provenanceOf
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -676,6 +677,10 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             s.copy(
                 title = c.title.ifBlank { s.title },
                 instruction = c.instruction,
+                // Recorded here because this is the only place that still knows
+                // what the coach was handed for this step. Once the guide is on
+                // disk the inputs are gone and the label could only be guessed.
+                instructionSource = provenanceOf(s.transcript, s.caption, c.instruction),
             )
         }
     }
@@ -699,6 +704,19 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             .ifBlank { "an unknown repair job" }
 
     // --- review edits ------------------------------------------------------
+
+    /**
+     * Rename the job being reviewed.
+     *
+     * The title is what the Library lists and what the coach is told the job
+     * is, and until now it was "New job" forever -- nothing anywhere changed
+     * it. Held in [_editing] like every other Review edit, so it repaints
+     * immediately and lands on disk when Save is tapped.
+     */
+    fun setTitle(text: String) {
+        val g = _editing.value ?: return
+        _editing.value = g.copy(title = text)
+    }
 
     private fun openForReview(id: String) {
         if (_editing.value?.id != id) _editing.value = guides.load(id)

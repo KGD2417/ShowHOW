@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -29,10 +30,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
@@ -76,14 +80,25 @@ fun ReviewScreen(vm: ShowHowViewModel, guideId: String) {
     Box(Modifier.fillMaxSize().background(Ink.bg)) {
         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
             Spacer(Modifier.height(28.dp))
-            Text(
-                g.title.ifBlank { "New job" },
-                style = MaterialTheme.typography.headlineSmall,
-                color = Ink.text,
-            )
+            // The name of the job, and the only place it can be set. It is what
+            // the Library lists and what the coach is told the job is, so
+            // leaving it as "New job" costs more than a blank line on screen.
+            Box {
+                BasicTextField(
+                    value = g.title,
+                    onValueChange = vm::setTitle,
+                    textStyle = TextStyle(color = Ink.text, fontSize = 26.sp),
+                    cursorBrush = SolidColor(Ink.blue),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (g.title.isBlank()) {
+                    Text("Name this job", color = Ink.faint, fontSize = 26.sp)
+                }
+            }
             Spacer(Modifier.height(6.dp))
             Text(
-                "Check these before saving. Joining or splitting takes two taps.",
+                "Name it, check the steps, then save. Joining or splitting takes two taps.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Ink.dim,
             )
