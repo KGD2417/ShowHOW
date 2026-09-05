@@ -86,21 +86,21 @@ class StepCutterTest {
         assertEquals(dur, steps.first().endMs)
     }
 
-    /** The confirmer is wired even though tonight it only passes cuts through. */
+    /** With no recogniser behind it the confirmer abstains, so cuts pass through. */
     @Test
-    fun `link word confirmer passes candidates through untouched`() {
+    fun `link word confirmer with no words passes candidates through untouched`() {
         val (samples, dur) = track(
             400L to ROOM, 3000L to VOICE, 1500L to ROOM, 3000L to VOICE,
         )
         val plain = StepCutter(Policy.DEFAULT).cut(samples, dur)
         val confirmed = StepCutter(
             Policy.DEFAULT,
-            LinkWordConfirmer(Policy.DEFAULT.linkWords("hi")),
+            LinkWordConfirmer(Policy.DEFAULT.linkWords("hi"), emptyList()),
         ).cut(samples, dur)
         assertEquals(plain, confirmed)
 
-        // A confirmer that vetoes everything collapses the take to one step,
-        // which is how we will know the recognizer is actually hooked up.
+        // A confirmer that vetoes everything collapses the take to one step.
+        // LinkWordConfirmerTest covers what the real one keeps and drops.
         val vetoed = StepCutter(Policy.DEFAULT) { emptyList() }.cut(samples, dur)
         assertEquals(1, vetoed.size)
     }

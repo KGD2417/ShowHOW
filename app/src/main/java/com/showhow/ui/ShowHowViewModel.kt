@@ -4,7 +4,11 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
-import com.showhow.ai.fakeStack
+import com.showhow.ai.FakeCaptioner
+import com.showhow.ai.FakeGestureSource
+import com.showhow.ai.FakeSceneCheck
+import com.showhow.ai.VoskAsr
+import com.showhow.ai.Word
 import com.showhow.capture.AudioRecorder
 import com.showhow.capture.CameraController
 import com.showhow.capture.MotionSource
@@ -12,8 +16,10 @@ import com.showhow.core.AdaptiveGate
 import com.showhow.core.Mode
 import com.showhow.core.ModeEngine
 import com.showhow.core.ModeInputs
+import com.showhow.core.LinkWordConfirmer
 import com.showhow.core.Policy
 import com.showhow.core.Sample
+import com.showhow.core.SpokenWord
 import com.showhow.core.StepCutter
 import com.showhow.data.Guide
 import com.showhow.data.GuideStore
@@ -47,8 +53,16 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     private val policyRepo = PolicyRepository(app).also { it.start() }
     val guides = GuideStore(File(app.filesDir, "guides"))
 
-    /** Fakes tonight. Tomorrow this is the only line that changes. */
-    val ai: AiStack = fakeStack()
+    /**
+     * Speech is real. Captions, gestures and the scene check are still fakes --
+     * phases 4, 6 and 7. Swapping one in is one line here and nothing else.
+     */
+    val ai: AiStack = AiStack(
+        asr = VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODEL_DIR)),
+        captioner = FakeCaptioner(),
+        gestures = FakeGestureSource(),
+        sceneCheck = FakeSceneCheck(),
+    )
 
     val policy: StateFlow<Policy> = policyRepo.policy
 
@@ -161,7 +175,17 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun buildGuide(id: String): String {
         val p = policy.value
         val durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
-        val ranges = StepCutter(p).cut(samples.toList(), durationMs)
+        // The recogniser runs once over the whole take, so its word clock and
+        // the sample log's clock are the same clock. An ASR that is off or
+        // fails returns nothing, and the confirmer then abstains.
+        val words = runCatching { ai.asr.transcribe(guides.takeFile(id)) }.getOrDefault(emptyList())
+        val confirmer = LinkWordConfirmer(
+            p.linkWords(LANG),
+            words.map { SpokenWord(it.text, it.startMs) },
+            p.confirmWindowMs,
+            p.confirmMinLinkWords,
+        )
+        val ranges = StepCutter(p, confirmer).cut(samples.toList(), durationMs)
         val steps = ranges.map { r ->
             val photo = guides.photoFile(id, r.index)
             Step(
@@ -171,12 +195,13 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 startMs = r.startMs,
                 endMs = r.endMs,
                 photo = photo.name,
+                transcript = transcriptFor(words, r.startMs, r.endMs),
             )
         }
         val guide = Guide(
             id = id,
             title = "Guide ${guides.ids().size + 1}",
-            lang = "hi",
+            lang = LANG,
             createdAt = System.currentTimeMillis(),
             steps = steps,
         )
@@ -241,6 +266,10 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun transcriptFor(words: List<Word>, startMs: Long, endMs: Long): String =
+        words.filter { it.startMs >= startMs && it.startMs < endMs }
+            .joinToString(" ") { it.text }
+
     private fun snap() {
         val id = currentId ?: return
         val cam = camera ?: return
@@ -254,6 +283,15 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         recorder.stop()
         motionJob?.cancel()
         policyRepo.stop()
+        // RELEASE, the last rung of the model ladder. A Vosk model is native
+        // memory the GC cannot see.
+        (ai.asr as? AutoCloseable)?.let { runCatching { it.close() } }
         super.onCleared()
+    }
+
+    private companion object {
+        // ponytail: guides are Hindi until the Show screen offers the choice,
+        // which is why linkWordsMr is still dead. One StateFlow when it does.
+        const val LANG = "hi"
     }
 }

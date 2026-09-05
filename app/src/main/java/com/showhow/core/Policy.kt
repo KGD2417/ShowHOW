@@ -36,6 +36,12 @@ data class Policy(
     /** A candidate mode must survive this long before it is committed. */
     val dwellMs: Long = 400,
 
+    // --- LinkWordConfirmer: the second opinion on a candidate cut ---
+    /** How far either side of a candidate cut a linking word still counts. */
+    val confirmWindowMs: Long = 2500,
+    /** Linking words needed inside that window to keep a cut. 0 disables the veto. */
+    val confirmMinLinkWords: Int = 1,
+
     // --- Linking words that confirm a candidate cut ---
     val linkWordsHi: List<String> = listOf("phir", "ab", "uske baad", "next", "then"),
     val linkWordsMr: List<String> = listOf("mag", "ata", "tyanantar", "next", "then"),

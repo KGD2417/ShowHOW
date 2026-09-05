@@ -11,6 +11,8 @@ data class Step(
     val endMs: Long = 0,
     /** File name inside the guide folder, e.g. "s1.jpg". */
     val photo: String = "",
+    /** What the expert actually said during this step. Empty when ASR is off. */
+    val transcript: String = "",
     /** Advice, never a gate. Nothing in the app blocks on this being set. */
     val warning: String? = null,
 )
