@@ -16,6 +16,7 @@ import com.showhow.core.AdaptiveGate
 import com.showhow.core.Mode
 import com.showhow.core.ModeEngine
 import com.showhow.core.ModeInputs
+import com.showhow.core.mapSnapsToSteps
 import com.showhow.core.LinkWordConfirmer
 import com.showhow.core.Policy
 import com.showhow.core.Sample
@@ -96,7 +97,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     // authoritative cut happens once at the end over the whole sample log.
     private var silenceStart = -1L
     private var sawSpeech = false
-    private var shots = 0
+
+    /** When each photo was taken, on the take's clock. Defect #1 lived here. */
+    private val snapTimesMs = mutableListOf<Long>()
 
     init {
         refreshLibrary()
@@ -139,7 +142,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         samples.clear()
         silenceStart = -1L
         sawSpeech = false
-        shots = 0
+        snapTimesMs.clear()
         gate = AdaptiveGate(policy.value)
         startedAt = System.currentTimeMillis()
         _debug.value = _debug.value.copy(recording = true, samples = 0, liveCuts = 0)
@@ -186,15 +189,20 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             p.confirmMinLinkWords,
         )
         val ranges = StepCutter(p, confirmer).cut(samples.toList(), durationMs)
+        // Photos were snapped at live boundaries; these are the final ones.
+        // There are usually more of the former, so the pairing is by time.
+        val snaps = mapSnapsToSteps(snapTimesMs.toList(), ranges)
         val steps = ranges.map { r ->
-            val photo = guides.photoFile(id, r.index)
+            val photo = snaps[r.index].takeIf { it >= 0 }
+                ?.let { guides.snapFile(id, it) }
+                ?.takeIf { it.exists() }
             Step(
                 index = r.index,
                 title = "Step ${r.index + 1}",
-                caption = if (photo.exists()) ai.captioner.caption(photo) else "",
+                caption = photo?.let { ai.captioner.caption(it) }.orEmpty(),
                 startMs = r.startMs,
                 endMs = r.endMs,
-                photo = photo.name,
+                photo = photo?.name.orEmpty(),
                 transcript = transcriptFor(words, r.startMs, r.endMs),
             )
         }
@@ -273,9 +281,12 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     private fun snap() {
         val id = currentId ?: return
         val cam = camera ?: return
-        val index = shots++
+        // The timestamp is taken here, not in the callback: the shutter is what
+        // the step boundary lines up with, not whenever the JPEG finishes.
+        val index = snapTimesMs.size
+        snapTimesMs += System.currentTimeMillis() - startedAt
         viewModelScope.launch {
-            runCatching { cam.takePhoto(guides.photoFile(id, index)) }
+            runCatching { cam.takePhoto(guides.snapFile(id, index)) }
         }
     }
 

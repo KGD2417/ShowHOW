@@ -150,3 +150,42 @@ class StepCutter(
         return bounds.zipWithNext().mapIndexed { i, (a, b) -> StepRange(i, a, b) }
     }
 }
+
+/**
+ * Which photo belongs to which step.
+ *
+ * Snaps are taken at *live* boundaries while the take is running; ranges come
+ * out of the *final* cut, after short utterances merge and the [Policy.maxSteps]
+ * cap bites. There are therefore almost always more snaps than steps, so
+ * pairing them off by position walks every photo onto the wrong step -- that is
+ * defect #1. Pair them by time instead.
+ *
+ * Each photo goes to the step it fits best and each step keeps only its closest
+ * photo, so no two steps share one and the extras simply lose.
+ *
+ * @param snapTimesMs when each photo was taken, ascending, on the take's clock.
+ * @return one snap index per range, or -1 for a step that ends up with no photo.
+ */
+fun mapSnapsToSteps(snapTimesMs: List<Long>, ranges: List<StepRange>): List<Int> {
+    val out = MutableList(ranges.size) { -1 }
+    val bestDelta = LongArray(ranges.size) { Long.MAX_VALUE }
+    // Offer each photo to the step it fits best, rather than letting each step
+    // grab the nearest one left. A greedy step would swallow a photo that a
+    // later step needed and leave the tail of the guide blank.
+    for ((snap, tMs) in snapTimesMs.withIndex()) {
+        var bestIndex = -1
+        var delta = Long.MAX_VALUE
+        for (r in ranges) {
+            val d = Math.abs(tMs - r.startMs)
+            if (d < delta) {
+                delta = d
+                bestIndex = r.index
+            }
+        }
+        if (bestIndex >= 0 && delta < bestDelta[bestIndex]) {
+            bestDelta[bestIndex] = delta
+            out[bestIndex] = snap
+        }
+    }
+    return out
+}
