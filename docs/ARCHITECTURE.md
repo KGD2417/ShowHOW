@@ -37,12 +37,15 @@ app/src/main/java/com/showhow/
 │   ├── AudioRecorder.kt     PCM16/16k/mono WAV, hand-written header, dBFS flow
 │   ├── CameraController.kt  Preview + ImageAnalysis + ImageCapture, bound together
 │   └── MotionSource.kt      accelerometer magnitude variance over a window
-├── ai/                      four interfaces; only captions are still canned
+├── ai/                      every model real; absent model means nothing, never a fake
 │   ├── Ai.kt                Asr, Captioner, GestureSource, SceneCheck, AiStack
+│   ├── DeviceAsr.kt         the system on-device recogniser, no word timings
 │   ├── RealAsr.kt           VoskAsr + NoopAsr, wav -> Word[] with timings
+│   ├── ObjectDetectSource.kt  MediaPipe detector; DetectorCaptioner names it
 │   ├── MediaPipeGestureSource.kt  canned-gesture recognizer + NoGestures
 │   ├── RealSceneCheck.kt    Bitmap adapter over core/SceneHash
-│   └── Fakes.kt             FakeCaptioner, the last canned answer left
+│   ├── Narrator.kt          DeviceNarrator, offline TTS voices only
+│   └── Coach.kt             on-device Gemma: step rewrite + learner Q&A
 ├── data/
 │   ├── Guide.kt             Guide + Step, @Serializable
 │   ├── GuideStore.kt        a guide is a folder on disk, no Room, no DataStore
@@ -209,50 +212,48 @@ exposes one `DebugState` so the debug screen repaints atomically.
 
 ## 10. Known defects and gaps
 
-Ranked. Fix from the top.
+Ranked. Fix from the top. Everything here was checked against the code.
 
-1. **The Player is still touch-only.** Everything behind it is live —
-   `vm.gestures`, `vm.mode`, `vm.reason`, `vm.sceneSimilarity`, `vm.watchScene`
-   are all on the ViewModel — but `PlayerScreen` binds no camera and collects
-   none of them, so hand signs, the mode bar and the scene advice are invisible.
-   This is the last thing between the app and a hands-free demo. (`ui/`, owned
-   by Anushka; nothing in `ai/` or `core/` is waiting on anything.)
-2. **`userFar` is still hardcoded `false`.** It needs a face height in pixels;
+1. **No `models/coach.task` is on any phone.** `ai/Coach` is written, compiled
+   and wired, and has never been loaded. Until a model is pushed, the rewrite
+   and the learner Q&A are both no-ops — correctly so, but unverified.
+2. **`Guide.title` is never editable.** Set to `"New job"` in `buildGuide`,
+   rendered as static text in Review, changed by nothing. Every guide in the
+   library carries the same name, and the coach's prompt says "The job: New
+   job" rather than what the job is.
+3. **Review edits damage the coach's output.** `commit()` retitles every step
+   `"Step N"`, so one Split or Join wipes the coach's titles; `splitStep`
+   copies one `instruction` onto both halves; `joinSteps` drops the lower
+   step's. `ReviewScreen` also never displays `instruction`, so the expert
+   cannot see or correct it.
+4. **`userFar` is still hardcoded `false`.** It needs a face height in pixels;
    `ShowHowViewModel.feedFaceSize` and `Policy.userFarFaceHeightPx` are in place
    waiting for a MediaPipe face detector. The suggested brightness proxy is not
    a distance measurement, and §2's fourth constraint says this app does not
    guess at what it cannot honestly measure.
-3. **No swipe gestures.** A swipe is motion over time, not a pose, so the canned
+5. **No swipe gestures.** A swipe is motion over time, not a pose, so the canned
    classifier cannot emit one. Palm and fist already cover ±1 step; add a
    landmark-x tracker only if that turns out too coarse in front of a user.
-4. **Captions come from `FakeCaptioner`'s four canned strings, cycled.** Gemma
-   3n on `mediapipe-tasks-genai` is the upgrade, and it is optional.
-5. Guide `lang` is hardcoded `"hi"`, so `linkWordsMr` is dead; `Step.warning` is
-   never set; `GuideStore.delete` has no UI; titles are `"Step N"` / `"Guide N"`.
-6. `speechUnclear` is computed from the *previous* take's mean word confidence,
+6. `Step.warning` is never set by anything; `GuideStore.delete` has no UI.
+7. `speechUnclear` is computed from the *previous* take's mean word confidence,
    because Vosk runs once over the finished WAV rather than live. It is the
    right signal on the wrong clock; a streaming recognizer would fix it.
+8. The object detector is generic COCO. It knows "laptop" and "keyboard" and
+   will never know "screw" without a fine-tune nobody has time for.
 
-### Fixed
-
-- **Photo ↔ step index mismatch** — photos are named by snap order and paired to
-  final ranges by time in `core.mapSnapsToSteps`. `SnapMapperTest`.
-- **ASR was fake** — `VoskAsr`, falling back to `NoopAsr`, never to canned data.
-- **`LinkWordConfirmer` was a no-op** — real, and passed to `StepCutter`.
-- **Gestures were fake** — `MediaPipeGestureSource` with an NPU → GPU → CPU
-  delegate ladder, `core.DwellLatch` for anti-flicker, `NoGestures` when the
-  model is absent.
-- **`RealSceneCheck` was never called** — it rides the one analyzer the
-  ViewModel exposes, and publishes `sceneSimilarity`.
-- **Analysis ran on the main thread** — `CameraController` now gives it its own
-  single-thread executor.
+**Fixed, listed here so nobody re-reports them:** the photo-indexing defect
+(photos are now paired to steps by time in `core/mapSnapsToSteps`, held by
+`SnapMapperTest`); the fakes (`Fakes.kt` is deleted, every model is real);
+`RealSceneCheck` being unwired (it rides `frameAnalyzer`); `LinkWordConfirmer`
+being a no-op; the guide language being hardcoded `"hi"` (it is a picker, and
+only offers languages whose model is on the phone).
 
 ## 11. Dependencies, and the model files that are not in git
 
-`vosk-android` (ASR) and `mediapipe-tasks-vision` (hand signs, object
-detection) are used. `mediapipe-tasks-genai` runs the coach.
-`onnxruntime-android` is declared but **never imported** — it is ~15 MB of the
-121 MB debug APK and can go the next time anyone opens a compile window.
+`vosk-android` (ASR), `mediapipe-tasks-vision` (hand signs, object detection)
+and `mediapipe-tasks-genai` (the coach) are the three ML dependencies, and all
+three are used. `onnxruntime-android` was declared and never imported; removing
+it took the debug APK from 122 MB to 91 MB.
 
 The models themselves are gitignored and belong on the phone, not in the repo.
 Every path is under `filesDir`, which is `/data/data/com.showhow/files`:

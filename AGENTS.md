@@ -113,40 +113,62 @@ git config --global user.email "your@email.com"
 `git log --format='%an %ae' -5` shows who has actually been committing, which
 is the fastest way to check the rule is holding.
 
-## 6. Current state — what is real and what is a stub
+## 6. Current state — what is real and what is left
 
-Do not assume a class does what its name suggests.
+Do not assume a class does what its name suggests. Verified against the code,
+not remembered.
 
-**Real and tested** (21 JVM tests, all passing)
+**Real and tested** (54 JVM tests, all passing)
 
 - `core/AdaptiveGate` — tracks the room's noise floor so a fixed dB threshold
   cannot fail in a fan-noise kitchen. Eats `-Infinity`/NaN from a dead mic.
 - `core/StepCutter` — silence runs ≥ `pauseMs` become cuts at the pause
   midpoint; short utterances merge forward; hard cap at `maxSteps`.
+- `core/LinkWordConfirmer` — real, and passed to `StepCutter` by the ViewModel.
+  Abstains when there is nothing to vote with, because "no opinion" has to mean
+  pass-through or the app hands back one enormous step.
+- `core/mapSnapsToSteps` — photos are paired to final steps **by time**, each
+  photo offered to its best step. This is the fix for the old photo-indexing
+  defect; `SnapMapperTest` is what keeps it fixed.
 - `core/ModeEngine` — EASY/HANDS/TALK/TAP from four booleans, Schmitt triggers
-  plus a dwell timer so nothing flickers.
-- `core/SceneHash` — 64-bit dHash (70%) + HSV histogram (30%), no model file.
-- `core/Policy`, `core/PolicyStore`, `data/PolicyRepository` — live reload.
+  plus a dwell timer so nothing flickers. Drives `PlayerScreen`, not just Debug.
+- `core/SceneHash`, `core/DwellLatch`, `core/Policy`, `core/PolicyStore`,
+  `data/PolicyRepository` — live reload, and `PolicyAssetTest` fails the build
+  if `policy.json` drifts out of sync with `Policy.kt`.
 - `capture/` — all three sources work. `data/GuideStore` — plain folders.
-- `ui/` — five screens wired end to end; the Debug screen is finished.
+- `ui/` — five screens wired end to end; the Player binds the camera and reads
+  gestures, mode, detections and scene similarity.
 
-**Fake, dead or unwired — this is the work that is left**
+**Real models, no fakes anywhere.** `Fakes.kt` is gone. Every model here is a
+gitignored file under `filesDir/models/`, loads down a delegate ladder, and
+returns *nothing* when it is absent — never canned data.
 
-- `ai/FakeAsr`, `ai/FakeCaptioner`, `ai/FakeGestureSource` return canned data.
-  `vosk-android`, `mediapipe-tasks-*` and `onnxruntime` are declared in
-  `gradle/libs.versions.toml` but **never imported**.
-- `ai/RealSceneCheck` is written and correct but **nothing calls it**
-  (`ShowScreen` binds the camera with `analyzer = null`).
-- `core/LinkWordConfirmer` is a no-op, and `ShowHowViewModel` does not pass it
-  to `StepCutter` — the pause detector currently stands alone.
-- `ModeEngine`'s output changes nothing outside the Debug screen.
-- `speechUnclear` and `userFar` are hardcoded `false` in the ViewModel.
-- Guide language is hardcoded `"hi"`, so `linkWordsMr` is dead.
-- `Step.warning` is never set by anything.
-- **Known bug:** photos are indexed by `shots++` from *live* cut detection, but
-  steps are indexed by the *final* cut ranges after `mergeShort` and the
-  `maxSteps` cap — so a photo can land on the wrong step. See
-  `docs/ARCHITECTURE.md`, "Known defects".
+- `ai/DeviceAsr` → `ai/VoskAsr` — the system on-device recogniser, Vosk as
+  fallback. One Vosk model per language; language is picked before recording.
+- `ai/ObjectDetectSource` + `ai/DetectorCaptioner` — real boxes, real scores,
+  and captions that are the labels the detector actually returned.
+- `ai/MediaPipeGestureSource`, `ai/RealSceneCheck`, `ai/DeviceNarrator`.
+- `ai/Coach` — the on-device Gemma that rewrites the expert's steps into an
+  English instruction and answers the learner's questions. See
+  `docs/ARCHITECTURE.md` §11 for the model files and how to install them.
+
+**What is actually left**
+
+- **No `models/coach.task` exists yet.** Until one is pushed, every coach path
+  is a no-op and the app behaves as it did before the coach was written.
+- `Guide.title` is never editable — it is set to `"New job"` at build time and
+  no screen changes it. It also means the coach's prompt says "The job: New
+  job" instead of what the job is.
+- `ShowHowViewModel.commit()` retitles every step `"Step N"`, so one Split or
+  Join in Review wipes the titles the coach wrote. `splitStep` copies one
+  `instruction` onto both halves; `joinSteps` drops the lower one's.
+- `ReviewScreen` shows the transcript but not `Step.instruction`, so the expert
+  never sees what the coach wrote about their own job.
+- `Step.warning` is declared and never set by anything.
+- `userFar` is always false: `feedFaceSize` has no caller, so that `ModeEngine`
+  branch is unreachable. It needs a face detector, and §2's fourth constraint
+  says we do not guess at what we cannot honestly measure.
+- The object detector is generic COCO — "laptop", "keyboard", never "screw".
 
 ## 7. The one thing that makes this project survivable
 
@@ -174,8 +196,8 @@ Red Light.
 - A deliberate shortcut with a known ceiling gets a `ponytail:` comment naming
   the ceiling and the upgrade path, the way `AdaptiveGate` and `StepCutter`
   already do.
-- Never add a dependency for something a few lines can do. The APK is already
-  121 MB from ML libraries that are not yet used.
+- Never add a dependency for something a few lines can do. The debug APK is
+  91 MB and every megabyte of it is a model library that actually runs.
 
 ## 9. Git rules (non-negotiable)
 

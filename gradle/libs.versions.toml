@@ -12,7 +12,6 @@ coroutines = "1.11.0"
 junit = "4.13.2"
 mediapipeVision = "1.0.0"
 mediapipeGenai = "0.10.35"
-onnxruntime = "1.29.0"
 vosk = "0.3.75"
 
 [libraries]
@@ -40,7 +39,6 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 
 mediapipe-tasks-vision = { group = "com.google.mediapipe", name = "tasks-vision", version.ref = "mediapipeVision" }
 mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version.ref = "mediapipeGenai" }
-onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 vosk-android = { group = "com.alphacephei", name = "vosk-android", version.ref = "vosk" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }

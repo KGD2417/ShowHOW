@@ -50,8 +50,9 @@ android {
             excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
             pickFirsts += "**/libc++_shared.so"
         }
-        // The one that actually matches a .so: MediaPipe, ONNX and Vosk each
-        // ship their own libc++_shared.so and the merger refuses to pick.
+        // The one that actually matches a .so: MediaPipe vision, MediaPipe genai
+        // and Vosk each ship their own libc++_shared.so and the merger refuses
+        // to pick.
         jniLibs {
             pickFirsts += "**/libc++_shared.so"
         }
@@ -79,11 +80,10 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 
-    // Wired tomorrow. Declared tonight so the APK size and the manifest merge
-    // are known quantities before anyone is tired.
+    // Vision runs the hand signs and the object detector, genai runs the coach,
+    // vosk runs the recogniser. All three are used; nothing here is speculative.
     implementation(libs.mediapipe.tasks.vision)
     implementation(libs.mediapipe.tasks.genai)
-    implementation(libs.onnxruntime.android)
     implementation(libs.vosk.android)
 
     debugImplementation(libs.androidx.ui.tooling)

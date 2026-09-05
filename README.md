@@ -18,7 +18,7 @@ else can then run the guide hands-free. Everything runs on the device.
 
     core/     Pure Kotlin. ZERO android.* imports. JVM-testable in seconds.
     capture/  AudioRecorder, CameraController, MotionSource
-    ai/       Interfaces and Fake implementations (real ones land behind them)
+    ai/       Asr, Captioner, GestureSource, SceneCheck, Coach — all real models
     data/     Guide, Step, GuideStore, PolicyRepository
     ui/       Compose screens and theme
 
