@@ -1,0 +1,282 @@
+{
+  ".claude/settings.local.json": {
+    "mtime": 1788589773.194537,
+    "ast_hash": "dc0a41405214fcaec7fe39d1e970b85e",
+    "semantic_hash": "dc0a41405214fcaec7fe39d1e970b85e"
+  },
+  "app/build.gradle.kts": {
+    "mtime": 1788532493.8909905,
+    "ast_hash": "e73ba70e121910234bc9fa02731fd066",
+    "semantic_hash": "e73ba70e121910234bc9fa02731fd066"
+  },
+  "app/src/main/assets/policy.json": {
+    "mtime": 1788531907.3063943,
+    "ast_hash": "758899b0411f1ec7d8ae336ac07ae77f",
+    "semantic_hash": "758899b0411f1ec7d8ae336ac07ae77f"
+  },
+  "app/src/main/java/com/showhow/MainActivity.kt": {
+    "mtime": 1788532186.3655536,
+    "ast_hash": "a753b2ae096395507765a10b5fef0d01",
+    "semantic_hash": "a753b2ae096395507765a10b5fef0d01"
+  },
+  "app/src/main/java/com/showhow/ai/Ai.kt": {
+    "mtime": 1788531930.5514162,
+    "ast_hash": "aee2023a240ae93f8c23c33de0b8ab9a",
+    "semantic_hash": "aee2023a240ae93f8c23c33de0b8ab9a"
+  },
+  "app/src/main/java/com/showhow/ai/Fakes.kt": {
+    "mtime": 1788531930.5835395,
+    "ast_hash": "66a74b074941e293c0d0ac57450e775f",
+    "semantic_hash": "66a74b074941e293c0d0ac57450e775f"
+  },
+  "app/src/main/java/com/showhow/ai/RealSceneCheck.kt": {
+    "mtime": 1788531930.6149035,
+    "ast_hash": "fa98d48482cd0f0d910c11bb70235516",
+    "semantic_hash": "fa98d48482cd0f0d910c11bb70235516"
+  },
+  "app/src/main/java/com/showhow/capture/AudioRecorder.kt": {
+    "mtime": 1788532009.8476715,
+    "ast_hash": "9f02c6ed02535a5239be886dead20e63",
+    "semantic_hash": "9f02c6ed02535a5239be886dead20e63"
+  },
+  "app/src/main/java/com/showhow/capture/CameraController.kt": {
+    "mtime": 1788532021.925679,
+    "ast_hash": "41c8600da740c3a6bbeb237b929c0ede",
+    "semantic_hash": "41c8600da740c3a6bbeb237b929c0ede"
+  },
+  "app/src/main/java/com/showhow/capture/MotionSource.kt": {
+    "mtime": 1788532031.0442116,
+    "ast_hash": "9711add8f9e58611625e4f8a599c8894",
+    "semantic_hash": "9711add8f9e58611625e4f8a599c8894"
+  },
+  "app/src/main/java/com/showhow/core/AdaptiveGate.kt": {
+    "mtime": 1788532270.5473287,
+    "ast_hash": "ce02ede745994fa8c38adb9189e3ba05",
+    "semantic_hash": "ce02ede745994fa8c38adb9189e3ba05"
+  },
+  "app/src/main/java/com/showhow/core/ModeEngine.kt": {
+    "mtime": 1788531851.2497578,
+    "ast_hash": "6b1d68e5f100b81c48d354b8ce27ecf5",
+    "semantic_hash": "6b1d68e5f100b81c48d354b8ce27ecf5"
+  },
+  "app/src/main/java/com/showhow/core/Policy.kt": {
+    "mtime": 1788531801.7252302,
+    "ast_hash": "d876efbdf6c63eb57b9a6ecaa4df4bf4",
+    "semantic_hash": "d876efbdf6c63eb57b9a6ecaa4df4bf4"
+  },
+  "app/src/main/java/com/showhow/core/PolicyStore.kt": {
+    "mtime": 1788531880.9356174,
+    "ast_hash": "97c20d20f7d92a4048bc45e41352b507",
+    "semantic_hash": "97c20d20f7d92a4048bc45e41352b507"
+  },
+  "app/src/main/java/com/showhow/core/SceneHash.kt": {
+    "mtime": 1788531880.967117,
+    "ast_hash": "24663d966faa98acec008150d83a82e5",
+    "semantic_hash": "24663d966faa98acec008150d83a82e5"
+  },
+  "app/src/main/java/com/showhow/core/StepCutter.kt": {
+    "mtime": 1788531838.539081,
+    "ast_hash": "a5ed28d3db452f5ad05451be7cf82881",
+    "semantic_hash": "a5ed28d3db452f5ad05451be7cf82881"
+  },
+  "app/src/main/java/com/showhow/data/Guide.kt": {
+    "mtime": 1788531907.335948,
+    "ast_hash": "fc5d0d6ef6fa2fdbaf2bd63961072fd6",
+    "semantic_hash": "fc5d0d6ef6fa2fdbaf2bd63961072fd6"
+  },
+  "app/src/main/java/com/showhow/data/GuideStore.kt": {
+    "mtime": 1788531907.3654902,
+    "ast_hash": "b3c401b74373f15e64686f6eabd02ba2",
+    "semantic_hash": "b3c401b74373f15e64686f6eabd02ba2"
+  },
+  "app/src/main/java/com/showhow/data/PolicyRepository.kt": {
+    "mtime": 1788531907.3951075,
+    "ast_hash": "6b48fa5f7dca641aa6054f36ed9e85fb",
+    "semantic_hash": "6b48fa5f7dca641aa6054f36ed9e85fb"
+  },
+  "app/src/main/java/com/showhow/ui/DebugScreen.kt": {
+    "mtime": 1788532170.660757,
+    "ast_hash": "9e588a94c57fb45ee590933cabe3b52a",
+    "semantic_hash": "9e588a94c57fb45ee590933cabe3b52a"
+  },
+  "app/src/main/java/com/showhow/ui/LibraryScreen.kt": {
+    "mtime": 1788532098.5166378,
+    "ast_hash": "f691a61889f64a6a534541c212d3fecd",
+    "semantic_hash": "f691a61889f64a6a534541c212d3fecd"
+  },
+  "app/src/main/java/com/showhow/ui/PlayerScreen.kt": {
+    "mtime": 1788532740.9215732,
+    "ast_hash": "f18ec3e2f9bfca4a15488b26de448018",
+    "semantic_hash": "f18ec3e2f9bfca4a15488b26de448018"
+  },
+  "app/src/main/java/com/showhow/ui/ReviewScreen.kt": {
+    "mtime": 1788532121.3165636,
+    "ast_hash": "bb82c28b3e14de482f0570da493be09a",
+    "semantic_hash": "bb82c28b3e14de482f0570da493be09a"
+  },
+  "app/src/main/java/com/showhow/ui/Screen.kt": {
+    "mtime": 1788532047.9706442,
+    "ast_hash": "7d1a8958f86d182c85190e4f76868fb5",
+    "semantic_hash": "7d1a8958f86d182c85190e4f76868fb5"
+  },
+  "app/src/main/java/com/showhow/ui/ShowHowHost.kt": {
+    "mtime": 1788532740.9215732,
+    "ast_hash": "b1a36f9c5402170f2c2fc668425d5c66",
+    "semantic_hash": "b1a36f9c5402170f2c2fc668425d5c66"
+  },
+  "app/src/main/java/com/showhow/ui/ShowHowViewModel.kt": {
+    "mtime": 1788532078.5140767,
+    "ast_hash": "fa8905f6eb172b2eef5225b5b241dcd1",
+    "semantic_hash": "fa8905f6eb172b2eef5225b5b241dcd1"
+  },
+  "app/src/main/java/com/showhow/ui/ShowScreen.kt": {
+    "mtime": 1788532553.8808534,
+    "ast_hash": "c9b463a30bb2784c85edfacc6d1f8299",
+    "semantic_hash": "c9b463a30bb2784c85edfacc6d1f8299"
+  },
+  "app/src/main/java/com/showhow/ui/Theme.kt": {
+    "mtime": 1788532086.742938,
+    "ast_hash": "b759adcdc2f9f88a705f6c8b76be91fe",
+    "semantic_hash": "b759adcdc2f9f88a705f6c8b76be91fe"
+  },
+  "app/src/test/java/com/showhow/core/AdaptiveGateTest.kt": {
+    "mtime": 1788532216.8008442,
+    "ast_hash": "296bfe7d2b03ce7b0d4cb0b9c4bc2b8c",
+    "semantic_hash": "296bfe7d2b03ce7b0d4cb0b9c4bc2b8c"
+  },
+  "app/src/test/java/com/showhow/core/ModeEngineTest.kt": {
+    "mtime": 1788532327.6047084,
+    "ast_hash": "dad69b81777ba1a12f8d2c13f54cb571",
+    "semantic_hash": "dad69b81777ba1a12f8d2c13f54cb571"
+  },
+  "app/src/test/java/com/showhow/core/PolicyStoreTest.kt": {
+    "mtime": 1788532346.0294201,
+    "ast_hash": "2ff0b3f071dd8bd8d6bc74dffd800a97",
+    "semantic_hash": "2ff0b3f071dd8bd8d6bc74dffd800a97"
+  },
+  "app/src/test/java/com/showhow/core/SceneHashTest.kt": {
+    "mtime": 1788532376.8657382,
+    "ast_hash": "93871606e26202af6288bf48eb560b7a",
+    "semantic_hash": "93871606e26202af6288bf48eb560b7a"
+  },
+  "app/src/test/java/com/showhow/core/StepCutterTest.kt": {
+    "mtime": 1788532287.9455764,
+    "ast_hash": "6a11b48ed9a5f49a677ca65aeb4a5414",
+    "semantic_hash": "6a11b48ed9a5f49a677ca65aeb4a5414"
+  },
+  "build.gradle.kts": {
+    "mtime": 1788531754.2939057,
+    "ast_hash": "2f1df9005df7916217db80a27fac621e",
+    "semantic_hash": "2f1df9005df7916217db80a27fac621e"
+  },
+  "gradlew": {
+    "mtime": 1788531733.8087788,
+    "ast_hash": "a43be8432bac3ffd05b3769aa42fe996",
+    "semantic_hash": "a43be8432bac3ffd05b3769aa42fe996"
+  },
+  "settings.gradle.kts": {
+    "mtime": 1788531754.2629466,
+    "ast_hash": "2602210f739f22ab8b52711663f2ce7f",
+    "semantic_hash": "2602210f739f22ab8b52711663f2ce7f"
+  },
+  ".claude/agents/ai-integration.md": {
+    "mtime": 1788593525.3690422,
+    "ast_hash": "5adf3950b7a4fb0a81d85fb741937192",
+    "semantic_hash": "5adf3950b7a4fb0a81d85fb741937192"
+  },
+  ".claude/agents/build-verify.md": {
+    "mtime": 1788593525.4857,
+    "ast_hash": "91c5c45fdeb28eecf8efe57d9ffe9db4",
+    "semantic_hash": "91c5c45fdeb28eecf8efe57d9ffe9db4"
+  },
+  ".claude/agents/core-systems.md": {
+    "mtime": 1788593525.3395226,
+    "ast_hash": "0329e5c5dddc57477be548b5cb4330c5",
+    "semantic_hash": "0329e5c5dddc57477be548b5cb4330c5"
+  },
+  ".claude/agents/demo-pitch.md": {
+    "mtime": 1788593525.4558487,
+    "ast_hash": "76d5b5276417e567bdf7c339c3a30cb0",
+    "semantic_hash": "76d5b5276417e567bdf7c339c3a30cb0"
+  },
+  ".claude/agents/policy-tuning.md": {
+    "mtime": 1788593525.4257286,
+    "ast_hash": "1bb33ed3cf974069335b4689cd221b3a",
+    "semantic_hash": "1bb33ed3cf974069335b4689cd221b3a"
+  },
+  ".claude/agents/ui-compose.md": {
+    "mtime": 1788593525.3964453,
+    "ast_hash": "b7b6da3978288c2a67a1607405e17a86",
+    "semantic_hash": "b7b6da3978288c2a67a1607405e17a86"
+  },
+  ".github/copilot-instructions.md": {
+    "mtime": 1788593499.8624203,
+    "ast_hash": "eaac6877aaf2905b416ac7458513fba8",
+    "semantic_hash": "eaac6877aaf2905b416ac7458513fba8"
+  },
+  "AGENTS.md": {
+    "mtime": 1788593183.9510343,
+    "ast_hash": "471e99fe9af5cb3c6075b5473c30cbb0",
+    "semantic_hash": "471e99fe9af5cb3c6075b5473c30cbb0"
+  },
+  "CLAUDE.md": {
+    "mtime": 1788593490.9025788,
+    "ast_hash": "4b4a88e2f53799a38225abde3e3ef6a1",
+    "semantic_hash": "4b4a88e2f53799a38225abde3e3ef6a1"
+  },
+  "README.md": {
+    "mtime": 1788532971.0637443,
+    "ast_hash": "5b6ce8fc0d7ae953dfa72db63b1dbce3",
+    "semantic_hash": "5b6ce8fc0d7ae953dfa72db63b1dbce3"
+  },
+  "agents/README.md": {
+    "mtime": 1788593304.7589664,
+    "ast_hash": "faa361481fb920208524dcf320914b6e",
+    "semantic_hash": "faa361481fb920208524dcf320914b6e"
+  },
+  "agents/ai-integration.md": {
+    "mtime": 1788593360.4264174,
+    "ast_hash": "096a84f60b4e32e27564e6234da472f3",
+    "semantic_hash": "096a84f60b4e32e27564e6234da472f3"
+  },
+  "agents/build-verify.md": {
+    "mtime": 1788593476.1679535,
+    "ast_hash": "023c772d9ab535065553424f3d3a3cc2",
+    "semantic_hash": "023c772d9ab535065553424f3d3a3cc2"
+  },
+  "agents/core-systems.md": {
+    "mtime": 1788593332.0510721,
+    "ast_hash": "ee2dda6b5700d7f65db06b4d2228a933",
+    "semantic_hash": "ee2dda6b5700d7f65db06b4d2228a933"
+  },
+  "agents/demo-pitch.md": {
+    "mtime": 1788593452.0166216,
+    "ast_hash": "3d7087039e0a0a125aac311047bc6286",
+    "semantic_hash": "3d7087039e0a0a125aac311047bc6286"
+  },
+  "agents/policy-tuning.md": {
+    "mtime": 1788593419.9346685,
+    "ast_hash": "fadc5ab57098ea8421ceed2353653e71",
+    "semantic_hash": "fadc5ab57098ea8421ceed2353653e71"
+  },
+  "agents/ui-compose.md": {
+    "mtime": 1788593387.965239,
+    "ast_hash": "d76a68df974da62279ee84460a8b5e47",
+    "semantic_hash": "d76a68df974da62279ee84460a8b5e47"
+  },
+  "docs/ARCHITECTURE.md": {
+    "mtime": 1788593248.5444436,
+    "ast_hash": "2ccb3ce75dd8b10157528d132614cfc7",
+    "semantic_hash": "2ccb3ce75dd8b10157528d132614cfc7"
+  },
+  "docs/WORKFLOW.md": {
+    "mtime": 1788593283.677173,
+    "ast_hash": "0d84d7e04e3faeda1a61423bfe4547f1",
+    "semantic_hash": "0d84d7e04e3faeda1a61423bfe4547f1"
+  },
+  "ShowHow-Team-Guide-1.pdf": {
+    "mtime": 1788592861.218271,
+    "ast_hash": "b065d90efc86b1066e700f7873a5ca97",
+    "semantic_hash": "b065d90efc86b1066e700f7873a5ca97"
+  }
+}
