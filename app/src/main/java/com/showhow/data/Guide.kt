@@ -23,6 +23,18 @@ data class Step(
      * after it.
      */
     val audio: String = "",
+    /**
+     * The step as the coach rewrote it, in English. Empty when there is no
+     * coach model, and every screen then falls back to [transcript].
+     *
+     * A separate field rather than a rewrite of [transcript] on purpose. The
+     * transcript is evidence -- what a real expert actually said, in their own
+     * language -- and it is the thing the Player can still play as audio. A
+     * model that overwrote it would leave the guide with no way to check what
+     * it changed, which is the difference between a helpful rewrite and a
+     * quiet fabrication.
+     */
+    val instruction: String = "",
     /** Advice, never a gate. Nothing in the app blocks on this being set. */
     val warning: String? = null,
     /** e.g. "speech was unclear here, HANDS works better". Advice, never a gate. */

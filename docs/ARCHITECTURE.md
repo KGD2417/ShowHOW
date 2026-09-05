@@ -250,9 +250,9 @@ Ranked. Fix from the top.
 ## 11. Dependencies, and the model files that are not in git
 
 `vosk-android` (ASR) and `mediapipe-tasks-vision` (hand signs, object
-detection) are used. `mediapipe-tasks-genai` (Gemma 3n captions) and
-`onnxruntime-android` are declared but **never imported** — they are ~20 MB of
-the 121 MB debug APK and can go the next time anyone opens a compile window.
+detection) are used. `mediapipe-tasks-genai` runs the coach.
+`onnxruntime-android` is declared but **never imported** — it is ~15 MB of the
+121 MB debug APK and can go the next time anyone opens a compile window.
 
 The models themselves are gitignored and belong on the phone, not in the repo.
 Every path is under `filesDir`, which is `/data/data/com.showhow/files`:
@@ -263,6 +263,7 @@ models/vosk-hi/                 one directory per language, never a shared one
 models/vosk-mr/                 a Vosk model speaks exactly one language
 models/gesture_recognizer.task  MediaPipe canned-gesture model
 models/object_detector.tflite   MediaPipe object detector (EfficientDet-Lite)
+models/coach.task               Gemma, for the step rewrite and the Q&A
 ```
 
 Install, from a machine with the files unzipped in `./models/`:
@@ -283,6 +284,7 @@ Every model is optional at runtime and nothing is ever replaced by a fake:
 | `vosk-<lang>/` | that language drops out of the picker; `NoopAsr` if all three are gone, so empty transcripts and the pause detector standing alone |
 | `gesture_recognizer.task` | `Gesture.NONE` forever, the Player's buttons still work |
 | `object_detector.tflite` | no boxes over the viewfinder, empty captions, transcript carries the step |
+| `coach.task` | steps stay in the expert's own words, the ask sheet falls back to its token match over the transcripts |
 
 Swapping a detector is a file push, not a build — drop a different
 MediaPipe-compatible `.tflite` in as `object_detector.tflite` and retune

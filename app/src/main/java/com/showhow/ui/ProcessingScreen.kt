@@ -70,6 +70,7 @@ private val STAGES = listOf(
     BuildStage.CUTTING to "Cutting into steps",
     BuildStage.PHOTOS to "Picking a photo for each step",
     BuildStage.CAPTIONS to "Describing the photos",
+    BuildStage.COACHING to "Writing the steps up for a beginner",
     BuildStage.SAVING to "Saving",
 )
 

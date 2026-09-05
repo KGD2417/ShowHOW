@@ -138,7 +138,12 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
         }
     }
 
-    val spoken = step.transcript.ifBlank { step.caption.ifBlank { step.title } }
+    // The coach's English instruction where there is one, the expert's own
+    // words where there is not. Both are true; the rewritten one is followable.
+    val spoken = step.instruction
+        .ifBlank { step.transcript }
+        .ifBlank { step.caption }
+        .ifBlank { step.title }
 
     LaunchedEffect(step.startMs, guideId, readAloud) {
         if (readAloud) {
@@ -242,7 +247,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
 
             Spacer(Modifier.height(16.dp))
             Text(
-                step.transcript.ifBlank { step.caption.ifBlank { step.title } },
+                spoken,
                 style = MaterialTheme.typography.headlineSmall,
                 fontSize = if (big) 34.sp else 24.sp,
                 lineHeight = if (big) 42.sp else 32.sp,
@@ -511,11 +516,20 @@ private fun ReasonBar(mode: Mode, reason: String) {
 }
 
 /**
- * Ask about a step.
+ * Ask about a step, out loud.
  *
- * The answer is a step of this guide, found by matching the question against
- * what the expert said. There is no model here and nothing leaves the phone,
- * which is exactly why the sheet can promise that in a sentence and mean it.
+ * Two answers come back and they are not the same kind of thing, so the sheet
+ * shows them as two things:
+ *
+ *   the coach   an on-device Gemma that has read the whole guide. It can
+ *               answer "which screwdriver", which no transcript contains --
+ *               and that is exactly why anything it says beyond the guide is
+ *               labelled. See [ShowHowViewModel.CoachAnswer].
+ *   the guide   a token match over what the expert actually said, instant and
+ *               incapable of inventing anything. It is the jump link, and it
+ *               is the whole answer on a phone with no coach model.
+ *
+ * Nothing leaves the phone in either case, which is why that sentence stays.
  */
 @Composable
 private fun AskSheet(
@@ -525,8 +539,16 @@ private fun AskSheet(
     onGoTo: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
-    val answer = remember(query) { if (query.isBlank()) null else vm.ask(guide, query) }
+    val query by vm.question.collectAsStateWithLifecycle()
+    val listening by vm.listening.collectAsStateWithLifecycle()
+    val coached by vm.coachAnswer.collectAsStateWithLifecycle()
+    // The token match is instant, so it runs on every keystroke as it always
+    // did. The coach costs seconds and runs only when asked.
+    val found = remember(query) { if (query.isBlank()) null else vm.ask(guide, query) }
+
+    // The sheet owns the mic and the pending answer: leaving must stop both, or
+    // a learner who taps away has a hot mic and a model still thinking.
+    DisposableEffect(Unit) { onDispose { vm.clearCoachAnswer() } }
 
     Box(Modifier.fillMaxSize().background(Ink.scrimSoft).clickable(onClick = onDismiss)) {
         Column(
@@ -544,7 +566,11 @@ private fun AskSheet(
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "Answers come from what you recorded. Nothing is sent anywhere.",
+                if (vm.coachPresent) {
+                    "Answered on this phone, from this guide. Nothing is sent anywhere."
+                } else {
+                    "Answers come from what you recorded. Nothing is sent anywhere."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = Ink.dim,
             )
@@ -554,57 +580,98 @@ private fun AskSheet(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .border(1.5.dp, Ink.blue, RoundedCornerShape(10.dp))
+                    .border(1.5.dp, if (listening) Ink.green else Ink.blue, RoundedCornerShape(10.dp))
                     .padding(14.dp),
             ) {
                 BasicTextField(
                     value = query,
-                    onValueChange = { query = it },
+                    onValueChange = { vm.setQuestion(it) },
                     textStyle = TextStyle(color = Ink.text, fontSize = 18.sp),
                     cursorBrush = SolidColor(Ink.blue),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 if (query.isEmpty()) {
-                    Text("Ask anything about this job.", color = Ink.faint, fontSize = 18.sp)
+                    Text(
+                        if (listening) "Listening..." else "Ask anything about this job.",
+                        color = Ink.faint,
+                        fontSize = 18.sp,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                // Speaking is the point -- the learner has a screwdriver in one
+                // hand -- so it is the left, larger affordance. Typing stays for
+                // a language with no model on the phone, and for a quiet room.
+                Text(
+                    if (listening) "Stop and ask" else "Speak the question",
+                    Modifier.clickable {
+                        if (listening) vm.stopListeningAndAsk(guide, stepNumber - 1)
+                        else vm.startListening()
+                    },
+                    color = if (listening) Ink.green else Ink.blue,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                if (!listening && query.isNotBlank()) {
+                    Text(
+                        "Ask",
+                        Modifier.clickable { vm.askCoach(guide, stepNumber - 1, query) },
+                        color = Ink.blue,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
                 }
             }
 
             Spacer(Modifier.height(16.dp))
-            if (answer != null) {
+
+            if (coached != null) {
+                val a = coached!!
                 Column(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
-                        .border(1.dp, Ink.green, RoundedCornerShape(10.dp))
+                        .border(1.dp, if (a.fromGuide) Ink.green else Ink.blue, RoundedCornerShape(10.dp))
                         .padding(14.dp),
                 ) {
                     Text(
-                        "That is step ${answer.stepIndex + 1}. Here is what you said.",
+                        when {
+                            a.thinking -> "Thinking..."
+                            a.text.isBlank() -> "The coach could not answer that."
+                            a.fromGuide -> "From this guide"
+                            // The one label in the app that admits a model went
+                            // past what the expert said. It is not a disclaimer,
+                            // it is the difference between advice and evidence.
+                            else -> "General repair knowledge, not from this guide"
+                        },
                         color = Ink.dim,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        answer.transcript,
-                        color = Ink.text,
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            "Go to step ${answer.stepIndex + 1}",
-                            Modifier.clickable { onGoTo(answer.stepIndex) },
-                            color = Ink.blue,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
+                    if (a.text.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(a.text, color = Ink.text, style = MaterialTheme.typography.titleMedium)
                     }
                 }
-            } else if (query.isNotBlank()) {
+                Spacer(Modifier.height(12.dp))
+            }
+
+            if (found != null) {
                 Text(
-                    "Nothing in this guide mentions that.",
+                    "The expert covered this in step ${found.stepIndex + 1}.",
+                    color = Ink.dim,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Go to step ${found.stepIndex + 1}",
+                    Modifier.clickable { onGoTo(found.stepIndex) },
+                    color = Ink.blue,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            } else if (query.isNotBlank() && coached == null) {
+                Text(
+                    "Nothing in this guide mentions that." +
+                        if (vm.coachPresent) " Ask the coach anyway." else "",
                     color = Ink.faint,
                     style = MaterialTheme.typography.bodyMedium,
                 )

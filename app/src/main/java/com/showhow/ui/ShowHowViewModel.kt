@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
 import com.showhow.ai.DETECTOR_MODEL
 import com.showhow.ai.Detections
+import com.showhow.ai.Coach
 import com.showhow.ai.DeviceAsr
 import com.showhow.ai.DetectorCaptioner
 import com.showhow.ai.GESTURE_MODEL
@@ -71,7 +72,7 @@ data class DebugState(
  * the whole point of the processing screen is that a person watching it can
  * tell what their phone is busy with.
  */
-enum class BuildStage { IDLE, TRANSCRIBING, CUTTING, PHOTOS, CAPTIONS, SAVING, DONE }
+enum class BuildStage { IDLE, TRANSCRIBING, CUTTING, PHOTOS, CAPTIONS, COACHING, SAVING, DONE }
 
 /** An answer to a question about a guide, assembled from what was recorded. */
 data class Answer(val stepIndex: Int, val transcript: String)
@@ -138,6 +139,30 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * confidently wrong -- so the person following gets both and picks.
      */
     private val narrator = DeviceNarrator(app)
+
+    /**
+     * The on-device model that turns one expert's take into a guide a stranger
+     * can follow, and answers the questions the expert never thought to answer.
+     *
+     * It is the only model here that is allowed to say something the expert did
+     * not, which is why it is also the only one whose output is labelled. See
+     * [Coach].
+     *
+     * Loaded lazily and never on the recording path: a 2B model is most of a
+     * gigabyte of native memory and the mic, the camera, Vosk and two MediaPipe
+     * graphs are already holding the rest. It is first touched when a guide is
+     * built, by which point the recorder and the live recognizer have stopped.
+     */
+    private val coach = Coach(
+        app,
+        File(app.filesDir, Coach.COACH_MODEL),
+        maxContextChars = { policy.value.coachContextChars },
+    )
+
+    /** Whether the coach model is on this phone, so the UI can say so plainly. */
+    val coachPresent: Boolean get() = coach.present
+
+    val coachDelegate: String get() = coach.delegateName
 
     /** Read the step aloud instead of playing the take. Off by default. */
     private val _readAloud = MutableStateFlow(false)
@@ -612,18 +637,66 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
 
+        // The coach reads the whole take at once, which is why it runs here and
+        // not per step: "phir isko nikaalo" only becomes "now lift the RAM
+        // module out" if the model has already seen the three steps before it.
+        _buildProgress.value = BuildStage.COACHING
+        val coached = coachSteps(steps)
+
         _buildProgress.value = BuildStage.SAVING
         val guide = Guide(
             id = id,
             title = "New job",
             lang = _lang.value,
             createdAt = System.currentTimeMillis(),
-            steps = steps,
+            steps = coached,
         )
         guides.save(guide)
         refreshLibrary()
         return id
     }
+
+    /**
+     * The coach's pass over a freshly cut guide.
+     *
+     * Per step and not all-or-nothing: a model that returns eight good lines
+     * and drops two leaves those two showing the expert's own words, which is
+     * a worse-looking guide and a true one. No model at all is the same path
+     * with every line dropped, so nothing here needs a branch for it.
+     */
+    private suspend fun coachSteps(steps: List<Step>): List<Step> {
+        if (!coach.present) return steps
+        val written = runCatching { coach.rewrite(jobFrom(steps), steps.map { it.transcript }) }
+            .getOrElse {
+                android.util.Log.w(TAG, "coach pass failed, keeping the raw steps", it)
+                emptyList()
+            }
+        return steps.mapIndexed { i, s ->
+            val c = written.getOrNull(i) ?: return@mapIndexed s
+            s.copy(
+                title = c.title.ifBlank { s.title },
+                instruction = c.instruction,
+            )
+        }
+    }
+
+    /**
+     * What this guide is about, for the coach's prompt.
+     *
+     * The title is still "New job" at build time -- the expert renames it on
+     * the Review screen, after this runs -- so the job is taken from what the
+     * detector actually saw. "laptop, keyboard, screwdriver" is a poor title
+     * and a good prompt: it is the difference between the coach writing about
+     * a generic object and writing about a laptop.
+     */
+    private fun jobFrom(steps: List<Step>): String =
+        steps.flatMap { it.caption.split(",") }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .groupingBy { it }.eachCount()
+            .entries.sortedByDescending { it.value }
+            .take(4).joinToString(", ") { it.key }
+            .ifBlank { "an unknown repair job" }
 
     // --- review edits ------------------------------------------------------
 
@@ -759,6 +832,149 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             .maxByOrNull { it.second }
             ?.first
             ?.let { Answer(it.index, it.transcript.ifBlank { it.caption }) }
+    }
+
+    // --- the coach, live in the Player -------------------------------------
+
+    /**
+     * A learner's question and what came back.
+     *
+     * [thinking] is a state and not a spinner detail: a 2B model takes seconds
+     * to answer and a sheet that shows nothing for four of them reads as a
+     * frozen app. [fromGuide] is false when the model went past what the expert
+     * recorded, so the Player can label it -- see [Coach.BEYOND].
+     */
+    data class CoachAnswer(
+        val question: String,
+        val text: String = "",
+        val thinking: Boolean = false,
+        val fromGuide: Boolean = true,
+    )
+
+    private val _coachAnswer = MutableStateFlow<CoachAnswer?>(null)
+    val coachAnswer: StateFlow<CoachAnswer?> = _coachAnswer.asStateFlow()
+
+    private var coachJob: Job? = null
+
+    /**
+     * Ask the coach, and read the answer out loud if the Player is speaking.
+     *
+     * One question at a time: a second one cancels the first rather than
+     * queueing, because a learner who rephrases wants the new answer and the
+     * old one is now noise.
+     */
+    fun askCoach(g: Guide, stepIndex: Int, question: String) {
+        coachJob?.cancel()
+        if (question.isBlank()) {
+            _coachAnswer.value = null
+            return
+        }
+        _coachAnswer.value = CoachAnswer(question, thinking = true)
+        coachJob = viewModelScope.launch {
+            val text = coach.answer(
+                job = g.title.ifBlank { jobFrom(g.steps) },
+                // The instruction where there is one, the expert's words where
+                // there is not. Both are true; the rewritten one reads better.
+                steps = g.steps.map { it.instruction.ifBlank { it.transcript } },
+                stepIndex = stepIndex,
+                question = question,
+            )
+            if (text.isBlank()) {
+                // No model, or it failed. Say so rather than showing an empty
+                // card that looks like the app hung.
+                _coachAnswer.value = CoachAnswer(question, thinking = false)
+                return@launch
+            }
+            _coachAnswer.value = CoachAnswer(
+                question = question,
+                text = text.replace(Coach.BEYOND, "").trim(),
+                thinking = false,
+                fromGuide = !text.contains(Coach.BEYOND),
+            )
+            // English, because that is what the coach answers in -- reading it
+            // with a Hindi voice would mangle every word.
+            if (_readAloud.value) narrator.speak(text.replace(Coach.BEYOND, ""), "en")
+        }
+    }
+
+    fun clearCoachAnswer() {
+        coachJob?.cancel()
+        coachJob = null
+        _coachAnswer.value = null
+        _question.value = ""
+        stopListening()
+    }
+
+    /**
+     * The question as the mic is hearing it, so the learner can see they were
+     * heard before the model takes four seconds to answer.
+     */
+    private val _question = MutableStateFlow("")
+    val question: StateFlow<String> = _question.asStateFlow()
+
+    private val _listening = MutableStateFlow(false)
+    val listening: StateFlow<Boolean> = _listening.asStateFlow()
+
+    private var questionJob: Job? = null
+    private var questionStream: VoskStream? = null
+
+    /**
+     * Open the mic. Tapped once to start, once more to send.
+     *
+     * A tap and not a silence detector: this runs in a workshop with a hand in
+     * a laptop, and a recogniser that decides on its own when a sentence ended
+     * cuts half of them off. A tap and not a hold, because the one hand the
+     * learner has spare is holding a screwdriver, and a hold that slips mid
+     * question loses the question.
+     *
+     * The question is transcribed in the guide's language, not English. The
+     * learner asks in whatever they speak; the coach answers in English.
+     */
+    fun startListening() {
+        if (_listening.value) return
+        val stream = (voskAsr as? VoskAsr)?.openStream(_lang.value)
+        if (stream == null) {
+            // No Vosk model for this language. The typed field is still there,
+            // so this is a missing feature and not a broken screen.
+            android.util.Log.w(TAG, "no recognizer for ${_lang.value}, questions must be typed")
+            return
+        }
+        questionStream = stream
+        _question.value = ""
+        _listening.value = true
+        // The wav is the recorder's price of admission, not something anyone
+        // keeps: a question is not part of the guide.
+        val scratch = File(getApplication<Application>().cacheDir, "question.wav")
+        questionJob = viewModelScope.launch {
+            launch(Dispatchers.Default) {
+                recorder.pcm.collect { chunk -> stream.feed(chunk)?.let { _question.value = it } }
+            }
+            recorder.record(scratch)
+            scratch.delete()
+        }
+    }
+
+    /** Released. Whatever was heard becomes the question. */
+    fun stopListening(): String {
+        val heard = _question.value.trim()
+        recorder.stop()
+        questionJob?.cancel()
+        questionJob = null
+        questionStream?.let { runCatching { it.close() } }
+        questionStream = null
+        _listening.value = false
+        return heard
+    }
+
+    /** Released with the guide to hand: stop listening and ask in one move. */
+    fun stopListeningAndAsk(g: Guide, stepIndex: Int) {
+        val heard = stopListening()
+        if (heard.isNotBlank()) askCoach(g, stepIndex, heard)
+    }
+
+    /** Typing, for a phone with no model for this language and for the judge. */
+    fun setQuestion(text: String) {
+        _question.value = text
     }
 
     // --- live signals ------------------------------------------------------
@@ -897,6 +1113,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         recorder.stop()
         motionJob?.cancel()
         policyRepo.stop()
+        stopListening()
+        runCatching { coach.close() }
         // RELEASE, the last rung of the model ladder. Native memory the GC
         // cannot see.
         (ai.asr as? AutoCloseable)?.let { runCatching { it.close() } }

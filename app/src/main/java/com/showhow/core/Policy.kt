@@ -58,6 +58,19 @@ data class Policy(
      */
     val detectMinScore: Float = 0.55f,
 
+    // --- Coach (the on-device model that rewrites steps and answers questions) ---
+    /**
+     * Chars of guide handed to the model per call.
+     *
+     * The one coach number worth turning during Red Light. Context is what
+     * costs time: a twelve step guide is a few thousand characters and a 2B
+     * model reads every one of them before it starts answering. Cut this and
+     * answers get faster and shallower; raise it and a long guide starts
+     * taking ten seconds a question, which is longer than the learner will
+     * wait with a screwdriver in their hand.
+     */
+    val coachContextChars: Int = 4000,
+
     // --- Player ---
     /** How long the Player waits after a step's audio ends before moving on. */
     val autoAdvanceMs: Long = 2000,

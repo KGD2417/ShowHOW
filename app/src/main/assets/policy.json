@@ -12,6 +12,19 @@
     "roomLoudEnterDb": -26.0,
     "roomLoudExitDb": -32.0,
     "dwellMs": 400,
-    "linkWordsHi": ["phir", "ab", "uske baad", "next", "then"],
-    "linkWordsMr": ["mag", "ata", "tyanantar", "next", "then"]
+    "linkWordsHi": [
+        "phir",
+        "ab",
+        "uske baad",
+        "next",
+        "then"
+    ],
+    "linkWordsMr": [
+        "mag",
+        "ata",
+        "tyanantar",
+        "next",
+        "then"
+    ],
+    "coachContextChars": 4000
 }
