@@ -181,6 +181,7 @@ private fun Empty() {
 private fun language(code: String): String = when {
     code.startsWith("mr") -> "Marathi"
     code.startsWith("hi") -> "Hindi"
+    code.startsWith("en") -> "English"
     else -> code
 }
 

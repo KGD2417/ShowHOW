@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -68,11 +69,10 @@ fun ShowScreen(vm: ShowHowViewModel) {
         DetectionOverlay(detections)
 
         // --- top strip: what the microphone is doing right now ---
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
+        // A column, not a row. Side by side, the level pill and the telemetry
+        // panel fought for the same width and the panel lost its right-hand
+        // edge off the screen -- "gestures" came out as "gestu".
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Row(
                 Modifier
                     .clip(CircleShape)
@@ -90,7 +90,7 @@ fun ShowScreen(vm: ShowHowViewModel) {
                 LevelMeter(debug.levelDb, debug.gateDb)
                 Spacer(Modifier.size(8.dp))
                 Text(
-                    "%.0f/%.0f dB".format(debug.levelDb, debug.gateDb),
+                    "%.0f/%.0f".format(debug.levelDb, debug.gateDb),
                     style = Mono,
                     color = Ink.dim,
                 )
@@ -102,17 +102,17 @@ fun ShowScreen(vm: ShowHowViewModel) {
                 )
             }
 
+            Spacer(Modifier.height(8.dp))
             Telemetry(
                 listOf(
-                    TelemetryRow("${detections.boxes.size} seen", "detector", vm.detectorDelegate),
-                    TelemetryRow("hand signs", "gestures", vm.gestureDelegate),
-                    TelemetryRow("${lang.uppercase()} speech", "vosk", "CPU"),
-                    TelemetryRow("${debug.liveCuts} cut", "step cutter", "CPU"),
-                    TelemetryRow("${debug.snaps} kept", "photos", "CPU"),
-                    // Not a label: the gate really is sitting on the room floor,
-                    // and these are the two numbers proving it.
-                    TelemetryRow("%.0f".format(debug.floorDb), "room floor dBFS"),
+                    TelemetryRow("${detections.boxes.size}", "objects", vm.detectorDelegate),
+                    TelemetryRow("hands", "gestures", vm.gestureDelegate),
+                    TelemetryRow(lang.uppercase(), "speech", "CPU"),
+                    TelemetryRow("${debug.liveCuts}", "cuts", "CPU"),
+                    TelemetryRow("${debug.snaps}", "photos", "CPU"),
+                    TelemetryRow("%.0f".format(debug.floorDb), "floor dB"),
                 ),
+                Modifier.align(Alignment.End),
             )
         }
 
@@ -146,19 +146,19 @@ fun ShowScreen(vm: ShowHowViewModel) {
             Spacer(Modifier.height(8.dp))
 
             Text(
-                // Empty until a streaming recogniser exists. The slot stays,
-                // filled with the honest version: what the phone has measured,
-                // not a sentence nobody said.
+                // The live text is a preview, not the record, so it gets a
+                // corner of the screen rather than the screen. Unbounded it
+                // grew into a wall of text over the viewfinder and pushed the
+                // controls off the bottom -- forty seconds of talking is more
+                // words than anyone reads while doing a job with their hands.
                 live.ifBlank {
                     "step ${debug.liveCuts + 1}  ·  ${debug.samples} samples  ·  " +
                         "cuts at ${policy.pauseMs} ms of quiet"
-                },
-                style = if (live.isBlank()) {
-                    MaterialTheme.typography.bodyMedium
-                } else {
-                    MaterialTheme.typography.headlineSmall
-                },
+                }.let { if (live.isBlank()) it else lastWords(it, LIVE_WORDS) },
+                style = MaterialTheme.typography.bodyLarge,
                 color = if (live.isBlank()) Ink.dim else Ink.text,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
 
             Spacer(Modifier.height(12.dp))
@@ -238,3 +238,11 @@ private fun LanguagePicker(available: List<String>, current: String, onPick: (St
 }
 
 private val NAMES = mapOf("en" to "English", "hi" to "हिंदी", "mr" to "मराठी")
+
+/** How much of the live transcript stays on screen. It is a preview. */
+private const val LIVE_WORDS = 12
+
+private fun lastWords(text: String, n: Int): String {
+    val words = text.split(" ").filter { it.isNotBlank() }
+    return if (words.size <= n) text else "… " + words.takeLast(n).joinToString(" ")
+}
