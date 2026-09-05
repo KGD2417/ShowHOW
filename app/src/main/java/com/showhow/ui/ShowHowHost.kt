@@ -20,6 +20,7 @@ fun ShowHowHost(vm: ShowHowViewModel = viewModel()) {
         when (val s = screen) {
             Screen.Library -> LibraryScreen(vm)
             Screen.Show -> ShowScreen(vm)
+            Screen.Processing -> ProcessingScreen(vm)
             Screen.Debug -> DebugScreen(vm)
             is Screen.Review -> ReviewScreen(vm, s.guideId)
             is Screen.Player -> PlayerScreen(vm, s.guideId)

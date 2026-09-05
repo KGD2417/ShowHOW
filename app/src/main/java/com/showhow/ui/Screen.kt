@@ -8,6 +8,9 @@ package com.showhow.ui
 sealed interface Screen {
     data object Library : Screen
     data object Show : Screen
+
+    /** Between "Done" and Review, while the phone is building the guide. */
+    data object Processing : Screen
     data class Review(val guideId: String) : Screen
     data class Player(val guideId: String) : Screen
     data object Debug : Screen

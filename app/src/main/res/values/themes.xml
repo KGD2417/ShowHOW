@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.ShowHow" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Dark, and matching Ink.bg, so there is no white flash between the
+         launcher and the first frame of Compose. -->
+    <style name="Theme.ShowHow" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+    </style>
 </resources>

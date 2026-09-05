@@ -56,6 +56,15 @@ fun DebugScreen(vm: ShowHowViewModel) {
         Kv("accel variance", "%.4f".format(d.accelVariance))
         Kv("recording", if (d.recording) "${d.elapsedMs / 1000}s, ${d.samples} samples" else "no")
         Kv("live cuts", d.liveCuts.toString())
+        Kv("photos snapped", d.snaps.toString())
+
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
+        Text("models on this phone", style = MaterialTheme.typography.titleSmall)
+        for ((name, there) in vm.modelsPresent()) {
+            Kv(name, if (there) "present" else "MISSING (falls back, never fakes)")
+        }
+        Kv("detector delegate", vm.detectorDelegate)
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
@@ -75,6 +84,11 @@ fun DebugScreen(vm: ShowHowViewModel) {
         Kv("inHand enter/exit", "${p.inHandEnterVar} / ${p.inHandExitVar}")
         Kv("roomLoud enter/exit", "${p.roomLoudEnterDb} / ${p.roomLoudExitDb} dBFS")
         Kv("dwell", "${p.dwellMs} ms")
+        Kv("speech unclear below", "${p.speechUnclearConfThreshold} over ${p.speechUnclearWindowWords} words")
+        Kv("user far below", "${p.userFarFaceHeightPx} px face")
+        Kv("scene advise below", p.sceneAdviseMinSimilarity.toString())
+        Kv("gesture dwell / floor", "${p.gestureDwellMs} ms / ${p.gestureMinConfidence}")
+        Kv("cut confirm", "${p.confirmMinLinkWords} words within ${p.confirmWindowMs} ms")
         Kv("link words hi", p.linkWordsHi.joinToString(", "))
         Kv("link words mr", p.linkWordsMr.joinToString(", "))
 

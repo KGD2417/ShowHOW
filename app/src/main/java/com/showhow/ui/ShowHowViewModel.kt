@@ -7,10 +7,13 @@ import androidx.camera.core.ImageAnalysis
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
+import com.showhow.ai.DETECTOR_MODEL
+import com.showhow.ai.DetectionBox
 import com.showhow.ai.FakeCaptioner
 import com.showhow.ai.GESTURE_MODEL
 import com.showhow.ai.Gesture
 import com.showhow.ai.MediaPipeGestureSource
+import com.showhow.ai.ObjectDetectSource
 import com.showhow.ai.RealSceneCheck
 import com.showhow.ai.VoskAsr
 import com.showhow.ai.gestureSourceOrNone
@@ -53,8 +56,21 @@ data class DebugState(
     val elapsedMs: Long = 0,
     val samples: Int = 0,
     val liveCuts: Int = 0,
+    val snaps: Int = 0,
     val policyError: String? = null,
 )
+
+/**
+ * What the phone is doing between "Done" and the review screen.
+ *
+ * Named after what the user sees, not after the class doing the work, because
+ * the whole point of the processing screen is that a person watching it can
+ * tell what their phone is busy with.
+ */
+enum class BuildStage { IDLE, TRANSCRIBING, CUTTING, PHOTOS, CAPTIONS, SAVING, DONE }
+
+/** An answer to a question about a guide, assembled from what was recorded. */
+data class Answer(val stepIndex: Int, val transcript: String)
 
 class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -65,6 +81,15 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         app,
         File(app.filesDir, GESTURE_MODEL),
     ) { policy.value }
+
+    private val detector = ObjectDetectSource(
+        app,
+        File(app.filesDir, DETECTOR_MODEL),
+        // ponytail: borrowing the gesture floor so this number is still tunable
+        // during Red Light. Ask Kshitij for a detectMinScore of its own -- the
+        // two models will not want the same threshold for long.
+        minScore = { policy.value.gestureMinConfidence },
+    )
 
     /** Only captions are still canned -- Gemma is phase 4, and optional. */
     val ai: AiStack = AiStack(
@@ -83,6 +108,19 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     val gestures: Flow<Gesture> = gestureSource.start()
 
     /**
+     * What the camera can see right now, for the boxes over the viewfinder.
+     *
+     * Empty when the detector model is not on the phone, and the overlay then
+     * draws nothing at all. Every box on screen is a claim with a model behind
+     * it; there is no decorative one.
+     */
+    private val _detections = MutableStateFlow<List<DetectionBox>>(emptyList())
+    val detections: StateFlow<List<DetectionBox>> = _detections.asStateFlow()
+
+    /** Which delegate the detector landed on, for the telemetry panel. */
+    val detectorDelegate: String get() = detector.delegateName
+
+    /**
      * How much the live camera looks like the photo saved for the step being
      * watched, 0..1, or 0 when nothing is being watched.
      *
@@ -94,6 +132,18 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     val sceneSimilarity: StateFlow<Float> = _sceneSimilarity.asStateFlow()
 
     private var sceneReference: Bitmap? = null
+
+    /**
+     * What the expert is saying, live, while recording.
+     *
+     * Empty today and honestly so: Vosk runs once over the finished WAV, so
+     * there is no streaming recogniser to fill this. The Show screen shows the
+     * level meter and "listening" in the same slot rather than a sentence
+     * nobody said. Filling this needs incremental acceptWaveForm on the mic
+     * buffer, which is a change in ai/ and capture/.
+     */
+    private val _liveTranscript = MutableStateFlow("")
+    val liveTranscript: StateFlow<String> = _liveTranscript.asStateFlow()
 
     /**
      * The photo the live camera is compared against. The Player calls this
@@ -113,21 +163,21 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * The one analyzer the camera binds. One frame, converted once, handed to
-     * everything that wants it -- two analyzers would fight over the same
-     * camera and convert the same bitmap twice.
+     * everything that wants it -- three analyzers would fight over the same
+     * camera and convert the same bitmap three times.
      */
     val frameAnalyzer = ImageAnalysis.Analyzer { proxy ->
         try {
             val hands = gestureSource as? MediaPipeGestureSource
             val reference = sceneReference
-            if (hands != null || reference != null) {
-                val frame = runCatching { proxy.toBitmap() }.getOrNull()
-                if (frame != null) {
-                    hands?.onFrame(frame, proxy.imageInfo.rotationDegrees)
-                    reference?.let {
-                        _sceneSimilarity.value =
-                            runCatching { ai.sceneCheck.compare(frame, it) }.getOrDefault(0f)
-                    }
+            val frame = runCatching { proxy.toBitmap() }.getOrNull()
+            if (frame != null) {
+                val rotation = proxy.imageInfo.rotationDegrees
+                hands?.onFrame(frame, rotation)
+                _detections.value = detector.onFrame(frame, rotation)
+                reference?.let {
+                    _sceneSimilarity.value =
+                        runCatching { ai.sceneCheck.compare(frame, it) }.getOrDefault(0f)
                 }
             }
         } finally {
@@ -146,6 +196,17 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _library = MutableStateFlow<List<Guide>>(emptyList())
     val library: StateFlow<List<Guide>> = _library.asStateFlow()
+
+    /** How far through building a guide the phone is. Drives the Processing screen. */
+    private val _buildProgress = MutableStateFlow(BuildStage.IDLE)
+    val buildProgress: StateFlow<BuildStage> = _buildProgress.asStateFlow()
+
+    /**
+     * The guide being reviewed, held here rather than re-read from disk so that
+     * splitting and joining repaint immediately instead of after a save.
+     */
+    private val _editing = MutableStateFlow<Guide?>(null)
+    val editing: StateFlow<Guide?> = _editing.asStateFlow()
 
     /** User override. Beats every other rule in the decision table. */
     private val _easyMode = MutableStateFlow(false)
@@ -212,6 +273,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     fun go(screen: Screen) {
         _screen.value = screen
         if (screen is Screen.Library) refreshLibrary()
+        if (screen is Screen.Review) openForReview(screen.guideId)
     }
 
     fun setEasyMode(on: Boolean) {
@@ -226,6 +288,26 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         _library.value = guides.list()
     }
 
+    /**
+     * Which model files are actually on this phone.
+     *
+     * Load-bearing at 3am: every "it is not detecting anything" turns out to be
+     * a model that was never pushed, and this is faster than reading logcat on
+     * someone else's laptop.
+     */
+    fun modelsPresent(): List<Pair<String, Boolean>> {
+        val dir = getApplication<Application>().filesDir
+        return listOf(
+            "vosk (speech)" to File(dir, VoskAsr.MODEL_DIR + "/conf/model.conf").isFile,
+            "gesture" to File(dir, GESTURE_MODEL).isFile,
+            "detector" to File(dir, DETECTOR_MODEL).isFile,
+        )
+    }
+
+    /** Bytes on disk for a guide folder. What the library card shows. */
+    fun sizeOnDisk(id: String): Long =
+        guides.dir(id).walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
     // --- recording ---------------------------------------------------------
 
     fun startRecording() {
@@ -238,7 +320,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         snapTimesMs.clear()
         gate = AdaptiveGate(policy.value)
         startedAt = System.currentTimeMillis()
-        _debug.value = _debug.value.copy(recording = true, samples = 0, liveCuts = 0)
+        _debug.value = _debug.value.copy(
+            recording = true, samples = 0, liveCuts = 0, snaps = 0, elapsedMs = 0,
+        )
 
         levelJob = viewModelScope.launch {
             recorder.levels.collect { db -> onLevel(db.toDouble()) }
@@ -251,8 +335,27 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         snap()
     }
 
-    /** @return the guide id, or null if nothing was recorded. */
-    fun stopRecording(onDone: (String?) -> Unit) {
+    /**
+     * "Next step" while recording: take a picture of what is being pointed at
+     * right now.
+     *
+     * Deliberately not a cut. The authoritative boundaries come out of the
+     * whole sample log at the end, and a person tapping a button is worse at
+     * finding them than the gate is. What a person is better at is knowing
+     * which moment is worth a photograph, and mapSnapsToSteps will pair that
+     * photograph to whichever final step it falls inside.
+     */
+    fun markStep() {
+        if (!_debug.value.recording) return
+        snap()
+    }
+
+    /**
+     * Stop, then build. The screen goes to Processing immediately and on to
+     * Review when the build finishes, because transcribing a ninety second
+     * take is seconds of real work and a frozen button is how a demo dies.
+     */
+    fun stopRecording() {
         val id = currentId
         recorder.stop()
         levelJob?.cancel()
@@ -260,11 +363,15 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         recordJob = null
         _debug.value = _debug.value.copy(recording = false)
         if (id == null) {
-            onDone(null)
+            go(Screen.Library)
             return
         }
+        _buildProgress.value = BuildStage.TRANSCRIBING
+        go(Screen.Processing)
         viewModelScope.launch {
-            onDone(buildGuide(id))
+            val built = buildGuide(id)
+            _buildProgress.value = BuildStage.DONE
+            go(Screen.Review(built))
         }
     }
 
@@ -274,7 +381,10 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // The recogniser runs once over the whole take, so its word clock and
         // the sample log's clock are the same clock. An ASR that is off or
         // fails returns nothing, and the confirmer then abstains.
+        _buildProgress.value = BuildStage.TRANSCRIBING
         val words = runCatching { ai.asr.transcribe(guides.takeFile(id)) }.getOrDefault(emptyList())
+
+        _buildProgress.value = BuildStage.CUTTING
         val confirmer = LinkWordConfirmer(
             p.linkWords(LANG),
             words.map { SpokenWord(it.text, it.startMs) },
@@ -282,10 +392,14 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             p.confirmMinLinkWords,
         )
         val ranges = StepCutter(p, confirmer).cut(samples.toList(), durationMs)
+
+        _buildProgress.value = BuildStage.PHOTOS
         // Photos were snapped at live boundaries; these are the final ones.
         // There are usually more of the former, so the pairing is by time.
         val snaps = mapSnapsToSteps(snapTimesMs.toList(), ranges)
         meanWordConfidence = meanConfidence(words.takeLast(p.speechUnclearWindowWords))
+
+        _buildProgress.value = BuildStage.CAPTIONS
         val steps = ranges.map { r ->
             val photo = snaps[r.index].takeIf { it >= 0 }
                 ?.let { guides.snapFile(id, it) }
@@ -301,9 +415,11 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 modeHint = modeHint(wordsIn(words, r.startMs, r.endMs), p),
             )
         }
+
+        _buildProgress.value = BuildStage.SAVING
         val guide = Guide(
             id = id,
-            title = "Guide ${guides.ids().size + 1}",
+            title = "New job",
             lang = LANG,
             createdAt = System.currentTimeMillis(),
             steps = steps,
@@ -312,6 +428,100 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         refreshLibrary()
         return id
     }
+
+    // --- review edits ------------------------------------------------------
+
+    private fun openForReview(id: String) {
+        if (_editing.value?.id != id) _editing.value = guides.load(id)
+    }
+
+    /**
+     * Cut one step in two at its midpoint.
+     *
+     * Both halves keep the same photo, because there is only one photo and
+     * guessing which half it belongs to would be worse than showing it twice.
+     * The transcript splits by word count, which lands close enough for a
+     * person to read and fix in the same twenty seconds.
+     */
+    fun splitStep(index: Int) {
+        val g = _editing.value ?: return
+        val s = g.steps.getOrNull(index) ?: return
+        if (s.endMs - s.startMs < 2) return
+        val mid = s.startMs + (s.endMs - s.startMs) / 2
+        val words = s.transcript.split(" ").filter { it.isNotBlank() }
+        val half = words.size / 2
+        val first = s.copy(endMs = mid, transcript = words.take(half).joinToString(" "))
+        val second = s.copy(startMs = mid, transcript = words.drop(half).joinToString(" "))
+        commit(g.steps.toMutableList().apply { set(index, first); add(index + 1, second) })
+    }
+
+    /**
+     * Fold a step into the one above it. [index] is the lower of the pair, so
+     * the "Join" control between two cards passes the index of the card below.
+     */
+    fun joinSteps(index: Int) {
+        val g = _editing.value ?: return
+        if (index <= 0 || index > g.steps.lastIndex) return
+        val above = g.steps[index - 1]
+        val here = g.steps[index]
+        val merged = above.copy(
+            endMs = here.endMs,
+            transcript = listOf(above.transcript, here.transcript)
+                .filter { it.isNotBlank() }.joinToString(" "),
+            photo = above.photo.ifBlank { here.photo },
+            caption = above.caption.ifBlank { here.caption },
+            modeHint = above.modeHint.ifBlank { here.modeHint },
+        )
+        commit(
+            g.steps.toMutableList().apply {
+                set(index - 1, merged)
+                removeAt(index)
+            },
+        )
+    }
+
+    /** Renumber and retitle, so index, title and position never disagree. */
+    private fun commit(steps: List<Step>) {
+        val g = _editing.value ?: return
+        _editing.value = g.copy(
+            steps = steps.mapIndexed { i, s -> s.copy(index = i, title = "Step ${i + 1}") },
+        )
+    }
+
+    fun saveEditing() {
+        val g = _editing.value ?: return
+        guides.save(g)
+        refreshLibrary()
+    }
+
+    // --- asking about a guide ----------------------------------------------
+
+    /**
+     * Which step answers a question, from what the expert actually said.
+     *
+     * A token overlap over the transcripts, not a model: the answer has to come
+     * out of this guide, offline, in the time it takes to lift a thumb. It
+     * cannot invent an answer, which is exactly the property that lets the
+     * sheet promise nothing is sent anywhere.
+     */
+    fun ask(g: Guide, question: String): Answer? {
+        // Takes the guide rather than an id on purpose: this runs on every
+        // keystroke in the ask sheet, and re-reading guide.json each time would
+        // put disk IO in the middle of typing.
+        val terms = question.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.length > 1 }
+        if (terms.isEmpty()) return null
+        return g.steps
+            .map { s ->
+                val hay = (s.transcript + " " + s.caption + " " + s.title).lowercase()
+                s to terms.count { hay.contains(it) }
+            }
+            .filter { it.second > 0 }
+            .maxByOrNull { it.second }
+            ?.first
+            ?.let { Answer(it.index, it.transcript.ifBlank { it.caption }) }
+    }
+
+    // --- live signals ------------------------------------------------------
 
     private fun onLevel(db: Double) {
         val t = System.currentTimeMillis() - startedAt
@@ -350,9 +560,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Report the largest face the camera can see, in pixels. Wired to a
-     * detector in phase 7; until one calls this, [faceHeightPx] stays 0 and
-     * userFar stays false rather than being guessed at from brightness.
+     * Report the largest face the camera can see, in pixels. Until a detector
+     * calls this, [faceHeightPx] stays 0 and userFar stays false rather than
+     * being guessed at from brightness.
      */
     fun feedFaceSize(px: Double) {
         faceHeightPx = px
@@ -410,6 +620,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // the step boundary lines up with, not whenever the JPEG finishes.
         val index = snapTimesMs.size
         snapTimesMs += System.currentTimeMillis() - startedAt
+        _debug.value = _debug.value.copy(snaps = snapTimesMs.size)
         viewModelScope.launch {
             runCatching { cam.takePhoto(guides.snapFile(id, index)) }
         }
@@ -419,18 +630,28 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         recorder.stop()
         motionJob?.cancel()
         policyRepo.stop()
-        // RELEASE, the last rung of the model ladder. A Vosk model is native
-        // memory the GC cannot see.
+        // RELEASE, the last rung of the model ladder. Native memory the GC
+        // cannot see.
         (ai.asr as? AutoCloseable)?.let { runCatching { it.close() } }
         (gestureSource as? AutoCloseable)?.let { runCatching { it.close() } }
+        runCatching { detector.close() }
         sceneReference?.recycle()
         sceneReference = null
         super.onCleared()
     }
 
-    private companion object {
+    companion object {
         // ponytail: guides are Hindi until the Show screen offers the choice,
         // which is why linkWordsMr is still dead. One StateFlow when it does.
-        const val LANG = "hi"
+        private const val LANG = "hi"
+
+        /**
+         * How long the Player waits after a step's audio ends before moving on.
+         *
+         * ponytail: this belongs in policy.json and is here because Policy.kt is
+         * Kshitij's file. Ask him for an autoAdvanceMs knob -- it is exactly the
+         * kind of number the room will want changed during Red Light.
+         */
+        const val AUTO_ADVANCE_MS = 2000L
     }
 }
