@@ -50,6 +50,12 @@ data class Policy(
      */
     val userFarFaceHeightPx: Double = 90.0,
 
+    // --- Hand signs ---
+    /** A pose must hold this long before it moves a step. Anti-flicker. */
+    val gestureDwellMs: Long = 350,
+    /** Below this classifier score the pose is not looked at at all. */
+    val gestureMinConfidence: Float = 0.6f,
+
     // --- LinkWordConfirmer: the second opinion on a candidate cut ---
     /** How far either side of a candidate cut a linking word still counts. */
     val confirmWindowMs: Long = 2500,

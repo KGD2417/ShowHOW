@@ -11,6 +11,8 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -24,6 +26,14 @@ class CameraController(private val context: Context) {
 
     private var provider: ProcessCameraProvider? = null
     private var capture: ImageCapture? = null
+
+    /**
+     * Frame analysis runs here, not on the main thread. A gesture model on a
+     * five-year-old phone takes tens of milliseconds a frame; on the main
+     * executor that is a dropped-frame preview and, eventually, an ANR in front
+     * of a jury. One thread, so KEEP_ONLY_LATEST still means what it says.
+     */
+    private var analysisExecutor: ExecutorService? = null
 
     /** The view to drop inside an AndroidView { }. */
     fun previewView(): PreviewView = PreviewView(context).apply {
@@ -47,7 +57,11 @@ class CameraController(private val context: Context) {
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also { a ->
-                    analyzer?.let { a.setAnalyzer(ContextCompat.getMainExecutor(context), it) }
+                    analyzer?.let {
+                        val ex = Executors.newSingleThreadExecutor()
+                        analysisExecutor = ex
+                        a.setAnalyzer(ex, it)
+                    }
                 }
 
             val still = ImageCapture.Builder()
@@ -86,5 +100,7 @@ class CameraController(private val context: Context) {
         provider?.unbindAll()
         provider = null
         capture = null
+        analysisExecutor?.shutdown()
+        analysisExecutor = null
     }
 }

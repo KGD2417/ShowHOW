@@ -1,13 +1,17 @@
 package com.showhow.ui
 
 import android.app.Application
+import androidx.camera.core.ImageAnalysis
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
 import com.showhow.ai.FakeCaptioner
-import com.showhow.ai.FakeGestureSource
 import com.showhow.ai.FakeSceneCheck
+import com.showhow.ai.GESTURE_MODEL
+import com.showhow.ai.Gesture
+import com.showhow.ai.MediaPipeGestureSource
 import com.showhow.ai.VoskAsr
+import com.showhow.ai.gestureSourceOrNone
 import com.showhow.ai.Word
 import com.showhow.capture.AudioRecorder
 import com.showhow.capture.CameraController
@@ -28,6 +32,7 @@ import com.showhow.data.PolicyRepository
 import com.showhow.data.Step
 import java.io.File
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,16 +59,44 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     private val policyRepo = PolicyRepository(app).also { it.start() }
     val guides = GuideStore(File(app.filesDir, "guides"))
 
-    /**
-     * Speech is real. Captions, gestures and the scene check are still fakes --
-     * phases 4, 6 and 7. Swapping one in is one line here and nothing else.
-     */
+    private val gestureSource = gestureSourceOrNone(
+        app,
+        File(app.filesDir, GESTURE_MODEL),
+    ) { policy.value }
+
+    /** Speech and hand signs are real. Captions and the scene check are not yet. */
     val ai: AiStack = AiStack(
         asr = VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODEL_DIR)),
         captioner = FakeCaptioner(),
-        gestures = FakeGestureSource(),
+        gestures = gestureSource,
         sceneCheck = FakeSceneCheck(),
     )
+
+    /**
+     * Hand signs for the Player to act on: OPEN_PALM next, FIST back, THUMB_UP
+     * replay the audio. Empty when no model is on the phone, so the buttons
+     * stay the way anyone reaches the end of a guide -- gestures are a second
+     * way in, never the only one.
+     */
+    val gestures: Flow<Gesture> = gestureSource.start()
+
+    /**
+     * The one analyzer the camera binds. One frame, converted once, handed to
+     * everything that wants it -- two analyzers would fight over the same
+     * camera and convert the same bitmap twice.
+     */
+    val frameAnalyzer = ImageAnalysis.Analyzer { proxy ->
+        try {
+            val hands = gestureSource as? MediaPipeGestureSource
+            if (hands != null) {
+                runCatching { proxy.toBitmap() }.getOrNull()
+                    ?.let { hands.onFrame(it, proxy.imageInfo.rotationDegrees) }
+            }
+        } finally {
+            // Not closing it stalls the pipeline after two frames.
+            proxy.close()
+        }
+    }
 
     val policy: StateFlow<Policy> = policyRepo.policy
 
@@ -351,6 +384,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // RELEASE, the last rung of the model ladder. A Vosk model is native
         // memory the GC cannot see.
         (ai.asr as? AutoCloseable)?.let { runCatching { it.close() } }
+        (gestureSource as? AutoCloseable)?.let { runCatching { it.close() } }
         super.onCleared()
     }
 
