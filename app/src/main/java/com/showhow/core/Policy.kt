@@ -58,6 +58,30 @@ data class Policy(
      */
     val detectMinScore: Float = 0.55f,
 
+    // --- Capture (how often the camera saves a frame while recording) ---
+    /**
+     * How often a frame is kept while the expert is talking.
+     *
+     * The expert should not have to think about photography. They do the job
+     * once, in one take, and the camera keeps a frame every couple of seconds
+     * throughout; which of those frames matters is decided afterwards, once the
+     * transcript exists and the steps are known.
+     *
+     * This is the whole reason the guide can show the right moment. A photo
+     * taken only at a pause is a photo of the expert pausing -- the interesting
+     * frame is halfway through the sentence, while their hands are on the part.
+     * You cannot go back for it, so everything is kept and pickFrames chooses.
+     */
+    val snapIntervalMs: Long = 2000,
+    /**
+     * Hard cap on kept frames, so a forgotten recording cannot fill the phone.
+     *
+     * 90 at two seconds is three minutes of continuous capture, which is longer
+     * than any guide this app is built for. Past the cap the periodic capture
+     * simply stops; the take keeps recording.
+     */
+    val maxSnaps: Int = 90,
+
     // --- Frame picking (which photo represents a step) ---
     /**
      * Below this mean luma gradient a frame is a smear, not a photograph.
@@ -169,8 +193,22 @@ data class Policy(
     val coachContextChars: Int = 4000,
 
     // --- Player ---
-    /** How long the Player waits after a step's audio ends before moving on. */
-    val autoAdvanceMs: Long = 2000,
+    /**
+     * How long the Player waits after a step's audio ends before moving on, or
+     * **0 to never move on by itself**, which is the default.
+     *
+     * It used to be two seconds, and that was wrong for the job this app is
+     * for. The narration for "undo the ten base screws" lasts four seconds and
+     * the work lasts two minutes; advancing when the *talking* stops walks away
+     * from a learner who has barely picked up a screwdriver, and they then have
+     * to find their place again with their hands full. Which is exactly the
+     * moment they cannot.
+     *
+     * So the step stays until a person moves it -- Next, an open palm, or a
+     * thumb to hear it again. Set a positive value here to bring the old
+     * behaviour back for a hands-free demo.
+     */
+    val autoAdvanceMs: Long = 0,
 
     // --- Scene check (advisory: it never disables anything) ---
     /** Below this similarity the Player may say "this doesn't look like the photo". */

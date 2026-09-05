@@ -185,7 +185,11 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
             }
             val span = (step.endMs - step.startMs).coerceAtLeast(1)
             progress = (player.currentPosition.toFloat() / span).coerceIn(0f, 1f)
-            if (player.playbackState == Player.STATE_ENDED || progress >= 1f) {
+            // 0 means the step waits for a person, which is the default: a
+            // repair step outlasts its narration by minutes.
+            if (policy.autoAdvanceMs > 0 &&
+                (player.playbackState == Player.STATE_ENDED || progress >= 1f)
+            ) {
                 if (advanceInMs < 0) advanceInMs = policy.autoAdvanceMs
                 advanceInMs -= 120
                 if (advanceInMs <= 0) {

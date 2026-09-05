@@ -20,6 +20,9 @@
 
     "detectMinScore": 0.55,
 
+    "snapIntervalMs": 2000,
+    "maxSnaps": 90,
+
     "frameMinSharpness": 0.05,
     "frameMinLuma": 22.0,
     "frameMaxLuma": 242.0,
@@ -56,7 +59,7 @@
 
     "coachContextChars": 4000,
 
-    "autoAdvanceMs": 2000,
+    "autoAdvanceMs": 0,
 
     "sceneAdviseMinSimilarity": 0.55,
 

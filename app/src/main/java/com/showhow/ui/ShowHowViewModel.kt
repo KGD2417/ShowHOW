@@ -301,6 +301,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
     private var liveStream: VoskStream? = null
     private var pcmJob: Job? = null
+    private var snapJob: Job? = null
 
     /**
      * The photo the live camera is compared against. The Player calls this
@@ -591,6 +592,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // First photo now, so step one always has a picture even if the expert
         // starts talking before the camera settles.
         snap()
+        startPeriodicCapture()
     }
 
     /**
@@ -611,6 +613,35 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         pcmJob = viewModelScope.launch(Dispatchers.Default) {
             recorder.pcm.collect { chunk ->
                 stream.feed(chunk)?.let { _liveTranscript.value = it }
+            }
+        }
+    }
+
+    /**
+     * Keep a frame every couple of seconds for the whole take.
+     *
+     * The expert is doing a job, not making a film, and should not have to
+     * think about when to photograph anything. Frames are kept throughout and
+     * the choice is made afterwards, when the transcript exists and the steps
+     * are known -- see core/pickFrames. The unchosen ones are deleted at the
+     * end, so a guide costs a few megabytes rather than fifty.
+     *
+     * The alternative, and what this replaces, was photographing only at
+     * detected pauses. That reliably produced a picture of the expert pausing:
+     * hands away from the work, looking at the phone. The frame worth showing
+     * is halfway through the sentence, and there is no going back for it.
+     */
+    private fun startPeriodicCapture() {
+        snapJob?.cancel()
+        snapJob = viewModelScope.launch {
+            while (_debug.value.recording) {
+                kotlinx.coroutines.delay(policy.value.snapIntervalMs.coerceAtLeast(250))
+                if (!_debug.value.recording) break
+                if (snapTimesMs.size >= policy.value.maxSnaps) {
+                    android.util.Log.i(TAG, "snap cap reached, capture stops; the take continues")
+                    break
+                }
+                snap()
             }
         }
     }
@@ -648,6 +679,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         levelJob?.cancel()
         levelJob = null
         recordJob = null
+        snapJob?.cancel()
+        snapJob = null
         stopLiveTranscript()
         _debug.value = _debug.value.copy(recording = false)
         if (id == null) {
@@ -748,8 +781,25 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             steps = coached,
         )
         guides.save(guide)
+        // Everything the picker passed over. Capturing densely and keeping it
+        // all would cost fifty megabytes a guide; the take, the chosen frames
+        // and guide.json are what a guide actually is.
+        discardUnusedSnaps(id, steps.map { it.photo }.filter { it.isNotBlank() }.toSet())
         refreshLibrary()
         id
+    }
+
+    /** Delete captured frames no step ended up using. */
+    private fun discardUnusedSnaps(id: String, kept: Set<String>) {
+        var freed = 0L
+        for (i in snapTimesMs.indices) {
+            val f = guides.snapFile(id, i)
+            if (f.name !in kept && f.isFile) {
+                freed += f.length()
+                f.delete()
+            }
+        }
+        if (freed > 0) android.util.Log.i(TAG, "freed ${freed / 1024} KB of unused frames")
     }
 
     /**
