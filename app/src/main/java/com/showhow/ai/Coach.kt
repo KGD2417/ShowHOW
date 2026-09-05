@@ -455,14 +455,17 @@ internal fun sourceToken(raw: String): Provenance? {
  * rather than turned into an empty string with a source attached to it.
  */
 internal fun splitNote(raw: String): Pair<Provenance, String> {
-    val trimmed = raw.trim().trim('*', '#', ' ', '[')
+    // Trailing pipes come off first: the model is asked for five columns and
+    // often writes six, leaving the note as "mind the clips|" once the empty
+    // last field is re-joined.
+    val trimmed = raw.trim().trim('|', ' ').trim('*', '#', ' ', '[')
     // ']' is a separator too, because the model reaches for the [general]
     // bracket form it was taught for answers and writes "[GENERAL] keep track".
     val at = trimmed.indexOfFirst { it == ':' || it == '-' || it == ']' }
     val claimed = if (at > 0) sourceToken(trimmed.take(at)) else null
     val text = (if (claimed != null) trimmed.drop(at + 1) else trimmed)
         .trim()
-        .trim('-', ' ')
+        .trim('-', ' ', '|')
     val empty = text.isBlank() ||
         text.equals("none", true) ||
         text.equals("n/a", true) ||

@@ -137,6 +137,18 @@ class WarningTest {
     }
 
     @Test
+    fun `a trailing pipe from a sixth column does not leak into the warning`() {
+        // Observed from Gemma 3n on the real device: asked for five columns, it
+        // writes six, and the empty last one came back re-joined as a stray "|"
+        // on the end of the sentence a learner reads.
+        assertEquals(
+            "Does anyone know what these are?",
+            splitNote("EXPERT: Does anyone know what these are?|").second,
+        )
+        assertEquals("mind the clips", splitNote("GENERAL: mind the clips |").second)
+    }
+
+    @Test
     fun `a warning containing a colon of its own is not cut in half`() {
         val (source, text) = splitNote("GENERAL: two things: the screws and the clips")
         assertEquals("two things: the screws and the clips", text)
