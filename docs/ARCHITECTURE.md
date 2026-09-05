@@ -37,10 +37,12 @@ app/src/main/java/com/showhow/
 │   ├── AudioRecorder.kt     PCM16/16k/mono WAV, hand-written header, dBFS flow
 │   ├── CameraController.kt  Preview + ImageAnalysis + ImageCapture, bound together
 │   └── MotionSource.kt      accelerometer magnitude variance over a window
-├── ai/                      four interfaces; three implementations are fakes
+├── ai/                      four interfaces; only captions are still canned
 │   ├── Ai.kt                Asr, Captioner, GestureSource, SceneCheck, AiStack
-│   ├── Fakes.kt             canned answers, demoable with zero models
-│   └── RealSceneCheck.kt    Bitmap adapter over core/SceneHash  (UNUSED today)
+│   ├── RealAsr.kt           VoskAsr + NoopAsr, wav -> Word[] with timings
+│   ├── MediaPipeGestureSource.kt  canned-gesture recognizer + NoGestures
+│   ├── RealSceneCheck.kt    Bitmap adapter over core/SceneHash
+│   └── Fakes.kt             FakeCaptioner, the last canned answer left
 ├── data/
 │   ├── Guide.kt             Guide + Step, @Serializable
 │   ├── GuideStore.kt        a guide is a folder on disk, no Room, no DataStore
@@ -76,8 +78,11 @@ mic
  stopRecording()
      └─ buildGuide(id)
          ├─ StepCutter(policy).cut(samples, durationMs)   -> List<StepRange>
-         ├─ per range: Step(title, caption, startMs, endMs, photo)
-         │              caption comes from ai.captioner (fake today)
+         ├─ ai.asr.transcribe(take.wav)                   -> List<Word>
+         ├─ LinkWordConfirmer(policy words, spoken words)  -> vetoes cuts
+         ├─ mapSnapsToSteps(snap times, ranges)            -> photo per step
+         ├─ per range: Step(title, caption, startMs, endMs, photo, transcript,
+         │              modeHint); caption comes from ai.captioner (canned)
          └─ GuideStore.save(guide)          guides/<id>/guide.json
 ```
 
@@ -112,10 +117,13 @@ mic, and "a long utterance does not drag the floor up".
 2. Every silence run ≥ `pauseMs` that follows real speech yields a candidate
    cut **at the midpoint of the pause** — so the tail of one step and the run-up
    of the next both keep some air around them.
-3. `CutConfirmer` gets a veto/second opinion. `PassThroughConfirmer` is used
-   today; `LinkWordConfirmer` exists but is a no-op until ASR lands, at which
-   point it confirms a boundary where the expert actually said "phir",
-   "uske baad", "mag", "tyanantar" (word lists live in `Policy`).
+3. `CutConfirmer` gets a veto/second opinion. `LinkWordConfirmer` keeps a
+   candidate only if `confirmMinLinkWords` linking words — "phir", "uske baad",
+   "mag", "tyanantar", from `Policy` — were spoken within `confirmWindowMs`
+   either side of it. Words near the cut are re-joined into one string first, so
+   a two-token phrase like "uske baad" matches. With no recogniser, no word list
+   or the knob at 0 it abstains and every cut passes: vetoing everything would
+   hand back one enormous step, the exact failure the cutter prevents.
 4. `mergeShort` drops the boundary after any segment shorter than
    `minUtteranceMs`, so it joins the next one. A short *tail* has no next, so
    the last boundary is dropped instead.
@@ -173,7 +181,9 @@ assets/policy.json ──seed once──▶ filesDir/policy.json ──▶ Polic
 ```
 filesDir/guides/<id>/guide.json     Guide { id, title, lang, createdAt, take, steps[] }
 filesDir/guides/<id>/take.wav       the single narration take
-filesDir/guides/<id>/s1.jpg …       one photo per step, ONE-BASED on disk (s1 = index 0)
+filesDir/guides/<id>/snap0.jpg …    named by SNAP order, not step order; which
+                                    step owns which snap is decided by time in
+                                    core.mapSnapsToSteps and stored in Step.photo
 filesDir/policy.json                the live policy
 ```
 
@@ -201,38 +211,59 @@ exposes one `DebugState` so the debug screen repaints atomically.
 
 Ranked. Fix from the top.
 
-1. **Photo ↔ step index mismatch.** `snap()` names files by `shots++`, driven
-   by *live* boundary detection in `onLevel`. `buildGuide` assigns
-   `photoFile(id, r.index)` from the *final* ranges, after `mergeShort` and the
-   `maxSteps` cap have removed boundaries. Live cuts ≥ final steps, so photos
-   drift onto the wrong steps. Fix: record the timestamp of each snap, then map
-   snaps to ranges by time in `buildGuide`.
-   (`ui/ShowHowViewModel.kt` — `snap`, `onLevel`, `buildGuide`.)
-2. **ASR is fake.** `FakeAsr` returns nine canned Hindi words. Vosk is declared,
-   never imported. Landing it also unlocks `LinkWordConfirmer` and
-   `speechUnclear`.
-3. **`LinkWordConfirmer` is a no-op and is not even passed to `StepCutter`.**
-   Wiring it is a body change, not an API change — the words are already in
-   `Policy`.
-4. **Gestures are fake and nobody collects the flow.** `FakeGestureSource`
-   emits `OPEN_PALM` every two seconds into the void. HANDS mode therefore does
-   nothing.
-5. **`RealSceneCheck` is never called.** `ShowScreen` binds the camera with
-   `analyzer = null`. The Player should compare the live frame to the step photo
-   and show an advisory line — advisory, never a block.
-6. **Mode output is invisible.** Only `DebugScreen` reads `debug.mode`.
-   `PlayerScreen` needs the four visual states.
-7. `speechUnclear` and `userFar` hardcoded `false`; guide `lang` hardcoded
-   `"hi"` so `linkWordsMr` is dead; `Step.warning` is never set;
-   `GuideStore.delete` has no UI; titles are `"Step N"` / `"Guide N"`.
-8. Captions come from `FakeCaptioner`'s four canned strings, cycled.
+1. **The Player is still touch-only.** Everything behind it is live —
+   `vm.gestures`, `vm.mode`, `vm.reason`, `vm.sceneSimilarity`, `vm.watchScene`
+   are all on the ViewModel — but `PlayerScreen` binds no camera and collects
+   none of them, so hand signs, the mode bar and the scene advice are invisible.
+   This is the last thing between the app and a hands-free demo. (`ui/`, owned
+   by Anushka; nothing in `ai/` or `core/` is waiting on anything.)
+2. **`userFar` is still hardcoded `false`.** It needs a face height in pixels;
+   `ShowHowViewModel.feedFaceSize` and `Policy.userFarFaceHeightPx` are in place
+   waiting for a MediaPipe face detector. The suggested brightness proxy is not
+   a distance measurement, and §2's fourth constraint says this app does not
+   guess at what it cannot honestly measure.
+3. **No swipe gestures.** A swipe is motion over time, not a pose, so the canned
+   classifier cannot emit one. Palm and fist already cover ±1 step; add a
+   landmark-x tracker only if that turns out too coarse in front of a user.
+4. **Captions come from `FakeCaptioner`'s four canned strings, cycled.** Gemma
+   3n on `mediapipe-tasks-genai` is the upgrade, and it is optional.
+5. Guide `lang` is hardcoded `"hi"`, so `linkWordsMr` is dead; `Step.warning` is
+   never set; `GuideStore.delete` has no UI; titles are `"Step N"` / `"Guide N"`.
+6. `speechUnclear` is computed from the *previous* take's mean word confidence,
+   because Vosk runs once over the finished WAV rather than live. It is the
+   right signal on the wrong clock; a streaming recognizer would fix it.
 
-## 11. Dependencies declared but not yet used
+### Fixed
 
-`mediapipe-tasks-vision` (gestures), `mediapipe-tasks-genai` (Gemma 3n
-captions), `onnxruntime-android`, `vosk-android` (ASR). They are in the build
-tonight so the APK size and the manifest merge are known quantities before
-anyone is tired — that is also why the debug APK is 121 MB.
+- **Photo ↔ step index mismatch** — photos are named by snap order and paired to
+  final ranges by time in `core.mapSnapsToSteps`. `SnapMapperTest`.
+- **ASR was fake** — `VoskAsr`, falling back to `NoopAsr`, never to canned data.
+- **`LinkWordConfirmer` was a no-op** — real, and passed to `StepCutter`.
+- **Gestures were fake** — `MediaPipeGestureSource` with an NPU → GPU → CPU
+  delegate ladder, `core.DwellLatch` for anti-flicker, `NoGestures` when the
+  model is absent.
+- **`RealSceneCheck` was never called** — it rides the one analyzer the
+  ViewModel exposes, and publishes `sceneSimilarity`.
+- **Analysis ran on the main thread** — `CameraController` now gives it its own
+  single-thread executor.
+
+## 11. Dependencies, and the model files that are not in git
+
+`vosk-android` (ASR) and `mediapipe-tasks-vision` (hand signs) are used.
+`mediapipe-tasks-genai` (Gemma 3n captions) and `onnxruntime-android` are still
+declared but unused — they stay in the build so the APK size and the manifest
+merge are known quantities, which is also why the debug APK is 121 MB.
+
+The models themselves are gitignored and belong on the phone, not in the repo:
+
+```
+filesDir/models/vosk/                   a Vosk small model, unzipped (conf/model.conf must exist)
+filesDir/models/gesture_recognizer.task MediaPipe canned-gesture model
+```
+
+Both are optional at runtime. Missing Vosk means empty transcripts and the
+pause detector standing alone; missing MediaPipe means `Gesture.NONE` forever
+and the Player's buttons. Neither is ever replaced by a fake.
 
 R8 is off in release on purpose: it breaks MediaPipe, which stack-walks to load
 its native libraries. All three ML libraries ship their own
