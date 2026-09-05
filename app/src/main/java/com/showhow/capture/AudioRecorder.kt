@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
+import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.log10
@@ -70,6 +73,7 @@ class AudioRecorder {
         val rec = AudioRecord(
             MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, CHANNEL, ENCODING, bufBytes,
         )
+        val effects = attachEffects(rec.audioSessionId)
         val buf = ShortArray(HOP_SAMPLES)
         val chunk = ShortArray(CHUNK_SAMPLES)
         var chunkFill = 0
@@ -111,6 +115,7 @@ class AudioRecorder {
                 }
             } finally {
                 recording = false
+                effects.forEach { runCatching { it.release() } }
                 runCatching { rec.stop() }
                 rec.release()
                 // Sizes are only known now, so rewrite the header in place.
@@ -120,7 +125,41 @@ class AudioRecorder {
         }
     }
 
+    /**
+     * Turn on whatever cleanup the phone can do in hardware.
+     *
+     * A hackathon hall is the worst room a recogniser will ever see: a hundred
+     * people, no soft surfaces, and an expert two feet from the mic. These run
+     * on the audio DSP rather than the CPU and cost nothing.
+     *
+     * Automatic gain control is deliberately **not** here, and neither is the
+     * MIC source that switches it on. AGC would help the recogniser hear a
+     * quiet speaker and would wreck the step cutter: it lifts the noise floor
+     * during every pause, and a gate whose floor creeps at 0.004 per sample
+     * cannot follow that. Pauses would stop looking like pauses, and the take
+     * would come back as one enormous step. Cleaner audio is not worth losing
+     * the thing that makes this a step-by-step guide.
+     *
+     * Both are optional silicon. Absent is normal, not an error -- the list is
+     * simply shorter and the take still records.
+     */
+    private fun attachEffects(sessionId: Int): List<android.media.audiofx.AudioEffect> {
+        val on = mutableListOf<android.media.audiofx.AudioEffect>()
+        if (NoiseSuppressor.isAvailable()) {
+            runCatching { NoiseSuppressor.create(sessionId) }.getOrNull()
+                ?.also { it.enabled = true; on += it }
+        }
+        if (AcousticEchoCanceler.isAvailable()) {
+            runCatching { AcousticEchoCanceler.create(sessionId) }.getOrNull()
+                ?.also { it.enabled = true; on += it }
+        }
+        Log.i(TAG, "audio effects on: " + on.joinToString { it.javaClass.simpleName })
+        return on
+    }
+
     companion object {
+        private const val TAG = "AudioRecorder"
+
         const val SAMPLE_RATE = 16_000
         const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         const val ENCODING = AudioFormat.ENCODING_PCM_16BIT

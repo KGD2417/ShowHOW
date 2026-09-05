@@ -79,8 +79,34 @@ data class Policy(
     val confirmMinLinkWords: Int = 1,
 
     // --- Linking words that confirm a candidate cut ---
-    val linkWordsHi: List<String> = listOf("phir", "ab", "uske baad", "next", "then"),
-    val linkWordsMr: List<String> = listOf("mag", "ata", "tyanantar", "next", "then"),
+    /**
+     * Linking words **as the recogniser spells them**, which for Hindi and
+     * Marathi means Devanagari.
+     *
+     * This is the whole trick and it is easy to get wrong: the Vosk Hindi model
+     * emits "फिर", never "phir". A romanised list therefore matches nothing, the
+     * confirmer abstains on every cut, and the second opinion silently stops
+     * existing while still looking correct in the config file. Romanised forms
+     * stay in the list because they cost nothing and a future model may use
+     * them, but the Devanagari is what actually fires.
+     */
+    val linkWordsHi: List<String> = listOf(
+        "फिर", "अब", "उसके बाद", "तब", "आगे", "बाद में", "इसके बाद",
+        "और अब", "और फिर", "पहले", "सबसे पहले", "अंत में", "आखिर में",
+        "phir", "ab", "uske baad", "tab", "aage", "baad mein", "iske baad",
+        "pehle", "sabse pehle", "ant mein", "aakhir mein",
+    ),
+    val linkWordsMr: List<String> = listOf(
+        "मग", "आता", "त्यानंतर", "नंतर", "पुढे", "यानंतर",
+        "आणि मग", "आणि आता", "पहिले", "शेवटी", "सर्वप्रथम",
+        "mag", "ata", "tyanantar", "nantar", "pudhe", "yanantar",
+        "pahile", "shevti", "sarvapratham",
+    ),
+    /** English guides need their own list; they were falling back to Hindi. */
+    val linkWordsEn: List<String> = listOf(
+        "then", "next", "after that", "now", "first", "finally",
+        "once", "after", "lastly", "and then", "now then",
+    ),
 ) {
     companion object {
         val DEFAULT = Policy()
@@ -97,6 +123,9 @@ data class Policy(
 
     fun encode(): String = json.encodeToString(serializer(), this)
 
-    fun linkWords(lang: String): List<String> =
-        if (lang.startsWith("mr")) linkWordsMr else linkWordsHi
+    fun linkWords(lang: String): List<String> = when {
+        lang.startsWith("mr") -> linkWordsMr
+        lang.startsWith("en") -> linkWordsEn
+        else -> linkWordsHi
+    }
 }
