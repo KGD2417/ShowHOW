@@ -17,6 +17,16 @@ interface Asr {
      *   rather than an error or an empty list.
      */
     suspend fun transcribe(wav: File, lang: String): List<Word>
+
+    /**
+     * True when [transcribe] returns real per-word clocks.
+     *
+     * The system recogniser returns sentences and no timings. Rather than let
+     * it invent them -- which would feed the step cutter confident nonsense --
+     * callers check this and transcribe each step separately once the cuts are
+     * already decided.
+     */
+    val hasWordTimings: Boolean get() = true
 }
 
 interface Captioner {

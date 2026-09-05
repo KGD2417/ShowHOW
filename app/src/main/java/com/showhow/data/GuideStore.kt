@@ -32,6 +32,35 @@ class GuideStore(private val root: File) {
     /** Where a re-recorded step's audio lands. Named by step, not by snap. */
     fun stepAudioFile(id: String, stepIndex: Int): File = File(dir(id), "step$stepIndex.wav")
 
+    /**
+     * Copy one slice of the take into its own PCM16/16k/mono WAV.
+     *
+     * For recognisers that hand back sentences with no word clock: the only way
+     * to know which words belong to which step is to give the recogniser one
+     * step at a time. Written into cacheDir by the caller, never into the guide.
+     */
+    fun sliceTake(take: File, startMs: Long, endMs: Long, out: File): File? {
+        if (!take.exists()) return null
+        val from = HEADER + msToBytes(startMs)
+        val to = (HEADER + msToBytes(endMs)).coerceAtMost(take.length())
+        val bytes = (to - from).coerceAtLeast(0)
+        if (bytes < BYTES_PER_MS * 200) return null   // under a fifth of a second
+        return runCatching {
+            java.io.RandomAccessFile(take, "r").use { raf ->
+                raf.seek(from)
+                val buf = ByteArray(bytes.toInt())
+                raf.readFully(buf)
+                out.outputStream().use { o ->
+                    o.write(com.showhow.capture.AudioRecorder.wavHeader(bytes))
+                    o.write(buf)
+                }
+            }
+            out
+        }.getOrNull()
+    }
+
+    private fun msToBytes(ms: Long): Long = (ms.coerceAtLeast(0) * BYTES_PER_MS)
+
     fun ids(): List<String> =
         root.listFiles { f -> f.isDirectory && File(f, "guide.json").exists() }
             ?.map { it.name }
@@ -53,4 +82,11 @@ class GuideStore(private val root: File) {
     }
 
     fun newId(): String = "g" + System.currentTimeMillis()
+
+    private companion object {
+        const val HEADER = 44L
+
+        /** 16 kHz, mono, 16-bit: 32 bytes of PCM per millisecond. */
+        const val BYTES_PER_MS = 32L
+    }
 }

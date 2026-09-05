@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
 import com.showhow.ai.DETECTOR_MODEL
 import com.showhow.ai.Detections
+import com.showhow.ai.DeviceAsr
 import com.showhow.ai.DetectorCaptioner
 import com.showhow.ai.GESTURE_MODEL
 import com.showhow.ai.Gesture
@@ -98,9 +99,24 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         minScore = { policy.value.detectMinScore },
     )
 
+    /**
+     * Speech goes to the phone's own recogniser when it has one.
+     *
+     * That is the only hardware-accelerated route available: Vosk is Kaldi, a
+     * C++ decoder with no delegate, so it is CPU whatever model is fed to it,
+     * while the system engine runs on the DSP and is markedly better on
+     * English. It is the on-device recogniser specifically, which is
+     * contractually not allowed to use the network -- the ordinary one is, and
+     * appears nowhere in this app.
+     *
+     * Vosk stays as the fallback for phones without it, and for Hindi and
+     * Marathi if the system has no pack for them.
+     */
+    private val deviceAsr = if (DeviceAsr.available(app)) DeviceAsr(app) else null
+
     /** Nothing in here is canned any more. Gemma would only make it prettier. */
     val ai: AiStack = AiStack(
-        asr = VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODELS_DIR)),
+        asr = deviceAsr ?: VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODELS_DIR)),
         captioner = DetectorCaptioner(detector),
         gestures = gestureSource,
         sceneCheck = RealSceneCheck(),
@@ -130,6 +146,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * frames a second reads as a fault in the app rather than what it is.
      */
     private var lastSeenAtMs = 0L
+
+    /** When the last frame was actually run through the models. */
+    private var lastFrameAtMs = 0L
 
     /** Which delegate each vision model landed on, for the telemetry panel. */
     val detectorDelegate: String get() = detector.delegateName
@@ -184,34 +203,47 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * camera and convert the same bitmap three times.
      */
     val frameAnalyzer = ImageAnalysis.Analyzer { proxy ->
+        var source: Bitmap? = null
+        var frame: Bitmap? = null
         try {
-            val hands = gestureSource as? MediaPipeGestureSource
-            val reference = sceneReference
-            val frame = runCatching { proxy.toBitmap() }.getOrNull()
-                ?.let { upright(it, proxy.imageInfo.rotationDegrees) }
-            if (frame != null) {
-                // Rotated once here and handed to everything already upright.
-                // MediaPipe's own Android samples rotate the bitmap rather than
-                // pass a rotation into ImageProcessingOptions, which sidesteps
-                // whose sign convention wins. It also fixes the scene check,
-                // which was comparing a sideways camera frame against an
-                // upright photo and calling a correct bench wrong.
-                hands?.onFrame(frame, 0)
-                val seen = detector.onFrame(frame, 0)
-                val now = System.currentTimeMillis()
-                if (seen.boxes.isNotEmpty()) {
-                    lastSeenAtMs = now
-                    _detections.value = seen
-                } else if (now - lastSeenAtMs > DETECTION_HOLD_MS) {
-                    _detections.value = seen
-                }
-                reference?.let {
-                    _sceneSimilarity.value =
-                        runCatching { ai.sceneCheck.compare(frame, it) }.getOrDefault(0f)
+            val now = System.currentTimeMillis()
+            // Thirty frames a second buys nothing: a hand has to hold a pose for
+            // gestureDwellMs anyway, and a box that moves faster than the eye is
+            // just heat. Every skipped frame is also two bitmaps not allocated.
+            if (now - lastFrameAtMs >= FRAME_INTERVAL_MS) {
+                lastFrameAtMs = now
+                val hands = gestureSource as? MediaPipeGestureSource
+                val reference = sceneReference
+                source = runCatching { proxy.toBitmap() }.getOrNull()
+                frame = source?.let { upright(it, proxy.imageInfo.rotationDegrees) }
+                if (frame != null) {
+                    // Rotated once here and handed to everything already upright.
+                    // MediaPipe's own Android samples rotate the bitmap rather
+                    // than pass a rotation into ImageProcessingOptions, which
+                    // sidesteps whose sign convention wins. It also fixes the
+                    // scene check, which was comparing a sideways camera frame
+                    // against an upright photo and calling a correct bench wrong.
+                    hands?.onFrame(frame, 0)
+                    val seen = detector.onFrame(frame, 0)
+                    if (seen.boxes.isNotEmpty()) {
+                        lastSeenAtMs = now
+                        _detections.value = seen
+                    } else if (now - lastSeenAtMs > DETECTION_HOLD_MS) {
+                        _detections.value = seen
+                    }
+                    reference?.let {
+                        _sceneSimilarity.value =
+                            runCatching { ai.sceneCheck.compare(frame, it) }.getOrDefault(0f)
+                    }
                 }
             }
         } finally {
-            // Not closing it stalls the pipeline after two frames.
+            // Both bitmaps are native memory the GC only frees when it feels
+            // like it. Two per frame, unrecycled, is how this app grew until
+            // Android killed it. Freed here, by hand, every frame.
+            if (frame !== source) frame?.recycle()
+            source?.recycle()
+            // Not closing the proxy stalls the pipeline after two frames.
             proxy.close()
         }
     }
@@ -245,14 +277,24 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * it returns Devanagari nonsense. The picker only ever offers languages
      * whose model is actually on this phone.
      */
-    private val _lang = MutableStateFlow(
-        VoskAsr.languagesPresent(File(app.filesDir, VoskAsr.MODELS_DIR)).firstOrNull() ?: "en",
-    )
-    val lang: StateFlow<String> = _lang.asStateFlow()
-
-    /** Languages this phone has a model for. Empty means ASR is off entirely. */
+    /**
+     * Languages this phone can actually transcribe. Empty means ASR is off.
+     *
+     * Declared before [_lang], which reads it: Kotlin initialises properties in
+     * source order, and this class has already been bitten once by a field that
+     * read a later one and found null.
+     *
+     * The system recogniser carries its own packs, so when it is in use the
+     * picker offers all three and a missing pack shows up as an empty
+     * transcript rather than as a missing button. Vosk can only offer what has
+     * been unzipped onto the phone.
+     */
     val languages: List<String> =
-        VoskAsr.languagesPresent(File(app.filesDir, VoskAsr.MODELS_DIR))
+        if (deviceAsr != null) VoskAsr.LANGUAGES
+        else VoskAsr.languagesPresent(File(app.filesDir, VoskAsr.MODELS_DIR))
+
+    private val _lang = MutableStateFlow(languages.firstOrNull() ?: "en")
+    val lang: StateFlow<String> = _lang.asStateFlow()
 
     fun setLang(code: String) {
         if (code in languages) _lang.value = code
@@ -306,6 +348,13 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     private var faceHeightPx = 0.0
 
     init {
+        // Which recogniser won, said once, at startup. "It was all over the
+        // place" is unanswerable without knowing which engine produced it.
+        android.util.Log.i(
+            "ShowHow",
+            "asr = " + (if (deviceAsr != null) "device (on-device system engine)" else "vosk (cpu)") +
+                ", languages = " + languages,
+        )
         refreshLibrary()
         viewModelScope.launch {
             policy.collect { p ->
@@ -357,6 +406,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     fun modelsPresent(): List<Pair<String, Boolean>> {
         val dir = getApplication<Application>().filesDir
         return listOf(
+            "on-device recogniser" to (deviceAsr != null),
             "vosk languages" to VoskAsr.languagesPresent(File(dir, VoskAsr.MODELS_DIR)).isNotEmpty(),
             "gesture" to File(dir, GESTURE_MODEL).isFile,
             "detector" to File(dir, DETECTOR_MODEL).isFile,
@@ -404,6 +454,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun startLiveTranscript() {
         _liveTranscript.value = ""
+        // Only Vosk streams. The system recogniser is a request-response engine
+        // per utterance, so there is nothing to feed it a half-second at a time.
         val stream = (ai.asr as? VoskAsr)?.openStream(_lang.value) ?: return
         liveStream = stream
         pcmJob = viewModelScope.launch(Dispatchers.Default) {
@@ -468,8 +520,16 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // the sample log's clock are the same clock. An ASR that is off or
         // fails returns nothing, and the confirmer then abstains.
         _buildProgress.value = BuildStage.TRANSCRIBING
-        val words = runCatching { ai.asr.transcribe(guides.takeFile(id), _lang.value) }
-            .getOrDefault(emptyList())
+        // A recogniser with word clocks can inform the cut. One without can
+        // only be asked about a step once the step exists, so the order of
+        // these two stages depends on which one is running.
+        val timed = ai.asr.hasWordTimings
+        val words = if (timed) {
+            runCatching { ai.asr.transcribe(guides.takeFile(id), _lang.value) }
+                .getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
 
         _buildProgress.value = BuildStage.CUTTING
         val confirmer = LinkWordConfirmer(
@@ -498,7 +558,11 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 startMs = r.startMs,
                 endMs = r.endMs,
                 photo = photo?.name.orEmpty(),
-                transcript = transcriptFor(words, r.startMs, r.endMs),
+                transcript = if (timed) {
+                    transcriptFor(words, r.startMs, r.endMs)
+                } else {
+                    sliceTranscript(id, r.startMs, r.endMs)
+                },
                 modeHint = modeHint(wordsIn(words, r.startMs, r.endMs), p),
             )
         }
@@ -724,6 +788,22 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Ask a timing-free recogniser about one step, by handing it only that
+     * step's audio. The slice lives in cacheDir and is deleted straight after --
+     * it is a question, not part of the guide.
+     */
+    private suspend fun sliceTranscript(id: String, startMs: Long, endMs: Long): String {
+        val asr = deviceAsr ?: return ""
+        val out = File(getApplication<Application>().cacheDir, "slice.wav")
+        val slice = guides.sliceTake(guides.takeFile(id), startMs, endMs, out) ?: return ""
+        return try {
+            asr.transcribeText(slice, _lang.value)
+        } finally {
+            slice.delete()
+        }
+    }
+
     private fun wordsIn(words: List<Word>, startMs: Long, endMs: Long): List<Word> =
         words.filter { it.startMs >= startMs && it.startMs < endMs }
 
@@ -778,5 +858,16 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
         /** How long a box survives a frame the detector missed it in. */
         const val DETECTION_HOLD_MS = 500L
+
+        /**
+         * Ten frames a second through the vision models.
+         *
+         * The camera offers thirty. A hand has to hold a pose for
+         * gestureDwellMs before anything happens, and a box that redraws faster
+         * than an eye can follow is heat rather than information -- so two
+         * frames in three were being converted, rotated, inferred on and thrown
+         * away.
+         */
+        const val FRAME_INTERVAL_MS = 100L
     }
 }
