@@ -45,6 +45,22 @@ class DeviceAsr(private val context: Context) : Asr {
     override val hasWordTimings: Boolean = false
 
     /**
+     * How many times in a row it has been asked about real audio and said
+     * nothing.
+     *
+     * Google's on-device recogniser advertises itself as available and then
+     * declines EXTRA_AUDIO_SOURCE: it is a microphone engine, and there is no
+     * capability flag that admits it. Measured on the demo phone -- a ten
+     * second take produced nothing from here and a real word from Vosk. So
+     * after a couple of silent answers this stops asking, because every ask
+     * costs a service round trip before the fallback runs anyway.
+     */
+    private var silentAnswers = 0
+
+    /** False once this phone has proved it will not transcribe a file. */
+    val worthAsking: Boolean get() = silentAnswers < GIVE_UP_AFTER
+
+    /**
      * @return one pseudo-word carrying the whole slice, because callers that
      *   ask this of a timing-free recogniser want the text, not the clock.
      */
@@ -60,15 +76,25 @@ class DeviceAsr(private val context: Context) : Asr {
      * one with the RIFF header skipped.
      */
     suspend fun transcribeText(wav: File, lang: String): String {
-        if (!available(context)) return ""
+        if (!available(context) || !worthAsking) return ""
         if (!wav.exists() || wav.length() <= HEADER_BYTES) return ""
         val started = System.currentTimeMillis()
 
-        val text = withTimeoutOrNull(TIMEOUT_MS) { run(wav, lang) }
-        if (text == null) {
-            Log.w(TAG, "recogniser did not answer within $TIMEOUT_MS ms")
+        Log.i(TAG, "asking the system engine for ${wav.length()} bytes as ${bcp47(lang)}")
+        val text = withTimeoutOrNull(TIMEOUT_MS) { run(wav, lang) }.orEmpty()
+
+        if (text.isBlank()) {
+            silentAnswers++
+            if (!worthAsking) {
+                Log.w(
+                    TAG,
+                    "system engine returned nothing $silentAnswers times; it does not " +
+                        "transcribe files on this phone. Not asking again this session.",
+                )
+            }
             return ""
         }
+        silentAnswers = 0
         Log.i(TAG, "device asr: ${text.length} chars in ${System.currentTimeMillis() - started} ms")
         return text
     }
@@ -105,10 +131,10 @@ class DeviceAsr(private val context: Context) : Asr {
                     }
 
                     override fun onError(error: Int) {
-                        // ERROR_NO_MATCH on a quiet slice is normal, not a fault.
-                        if (error != SpeechRecognizer.ERROR_NO_MATCH) {
-                            Log.w(TAG, "recogniser error $error")
-                        }
+                        // Every error, by name, including NO_MATCH. Suppressing
+                        // the "normal" one is how an engine that silently
+                        // refuses a file looks identical to a quiet room.
+                        Log.w(TAG, "recogniser error: " + name(error))
                         finish("")
                     }
 
@@ -179,6 +205,28 @@ class DeviceAsr(private val context: Context) : Asr {
 
         /** A step is at most a couple of minutes; ten times that is a hang. */
         private const val TIMEOUT_MS = 30_000L
+
+        /** Two silent answers in a row is a capability, not a quiet room. */
+        private const val GIVE_UP_AFTER = 2
+
+        /** Error codes by name, because the number alone diagnoses nothing. */
+        fun name(code: Int): String = when (code) {
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
+            SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
+            SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
+            SpeechRecognizer.ERROR_SERVER -> "SERVER"
+            SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
+            SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "RECOGNIZER_BUSY"
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "INSUFFICIENT_PERMISSIONS"
+            SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "TOO_MANY_REQUESTS"
+            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "SERVER_DISCONNECTED"
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "LANGUAGE_NOT_SUPPORTED"
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "LANGUAGE_UNAVAILABLE"
+            SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT -> "CANNOT_CHECK_SUPPORT"
+            else -> "code $code"
+        }
 
         fun bcp47(lang: String): String = when {
             lang.startsWith("mr") -> "mr-IN"

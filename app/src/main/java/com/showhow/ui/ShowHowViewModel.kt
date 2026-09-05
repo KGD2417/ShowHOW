@@ -114,9 +114,21 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val deviceAsr = if (DeviceAsr.available(app)) DeviceAsr(app) else null
 
+    /**
+     * The fallback, and the reason there is one.
+     *
+     * The system engine is faster and better when it answers, but it is a
+     * service owned by someone else: it can decline a file, lack a language
+     * pack, or simply return nothing, and none of that is visible until a take
+     * comes back with an empty transcript. Vosk always answers. It loads
+     * lazily, so on a phone where the system engine works this costs nothing
+     * but disk.
+     */
+    private val voskAsr = VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODELS_DIR))
+
     /** Nothing in here is canned any more. Gemma would only make it prettier. */
     val ai: AiStack = AiStack(
-        asr = deviceAsr ?: VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODELS_DIR)),
+        asr = deviceAsr ?: voskAsr,
         captioner = DetectorCaptioner(detector),
         gestures = gestureSource,
         sceneCheck = RealSceneCheck(),
@@ -351,7 +363,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // Which recogniser won, said once, at startup. "It was all over the
         // place" is unanswerable without knowing which engine produced it.
         android.util.Log.i(
-            "ShowHow",
+            TAG,
             "asr = " + (if (deviceAsr != null) "device (on-device system engine)" else "vosk (cpu)") +
                 ", languages = " + languages,
         )
@@ -454,9 +466,11 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun startLiveTranscript() {
         _liveTranscript.value = ""
-        // Only Vosk streams. The system recogniser is a request-response engine
-        // per utterance, so there is nothing to feed it a half-second at a time.
-        val stream = (ai.asr as? VoskAsr)?.openStream(_lang.value) ?: return
+        // The live caption is always Vosk, whichever engine builds the guide.
+        // The system recogniser is request-response per utterance and cannot be
+        // fed half a second at a time, and a viewfinder with no words on it
+        // looks broken even when the transcript arrives correctly at Review.
+        val stream = (voskAsr as? VoskAsr)?.openStream(_lang.value) ?: return
         liveStream = stream
         pcmJob = viewModelScope.launch(Dispatchers.Default) {
             recorder.pcm.collect { chunk ->
@@ -794,11 +808,22 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * it is a question, not part of the guide.
      */
     private suspend fun sliceTranscript(id: String, startMs: Long, endMs: Long): String {
-        val asr = deviceAsr ?: return ""
         val out = File(getApplication<Application>().cacheDir, "slice.wav")
         val slice = guides.sliceTake(guides.takeFile(id), startMs, endMs, out) ?: return ""
         return try {
-            asr.transcribeText(slice, _lang.value)
+            val fromDevice = deviceAsr?.transcribeText(slice, _lang.value).orEmpty()
+            if (fromDevice.isNotBlank()) {
+                fromDevice
+            } else {
+                // The system engine said nothing. That is either a quiet step
+                // or an engine that will not take a file, and from here the two
+                // look identical -- so ask the one that always answers rather
+                // than hand back an empty guide.
+                android.util.Log.i(TAG, "system engine returned nothing, falling back to vosk")
+                runCatching { voskAsr.transcribe(slice, _lang.value) }
+                    .getOrDefault(emptyList())
+                    .joinToString(" ") { it.text }
+            }
         } finally {
             slice.delete()
         }
@@ -853,6 +878,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        const val TAG = "ShowHow"
+
         /** A WAV with only a header in it is a recording that never started. */
         const val WAV_HEADER_BYTES = 44L
 
