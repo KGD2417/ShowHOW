@@ -149,6 +149,38 @@ class WarningTest {
     }
 
     @Test
+    fun `a note that only restates an absence is no note`() {
+        // Straight off the device. A silent step is described to the model as
+        // "(nothing -- worked in silence)" and it hands that back as a caution,
+        // stapling a label onto every clause. A learner reading it has been
+        // told nothing about their work and charged attention for it.
+        val observed = "general repair advice, not yours: Nothing said. Visual: Detector saw " +
+            "nothing recognized. EXPERT: Worked in silence. EXPERT: Nothing recognized. " +
+            "EXPERT: No photograph for this step."
+        assertEquals(Provenance.UNKNOWN to "", splitNote(observed))
+        assertEquals(Provenance.UNKNOWN to "", splitNote("GENERAL: Nothing said.|EXPERT: Nothing recognized.|"))
+        assertEquals(Provenance.UNKNOWN to "", splitNote("No instruction given."))
+    }
+
+    @Test
+    fun `extra labels stapled mid-sentence are stripped, the sentence is kept`() {
+        val (source, text) = splitNote(
+            "EXPERT: Keep the screws in order. VISUAL: the small ones came off the hinge.",
+        )
+        assertEquals(Provenance.EXPERT, source)
+        assertEquals("Keep the screws in order. the small ones came off the hinge.", text)
+    }
+
+    @Test
+    fun `a real caution that happens to mention a missing photo survives`() {
+        // The absence filter must not eat a genuine warning.
+        val (_, text) = splitNote(
+            "GENERAL: Keep track of the removed screws, they are different lengths.",
+        )
+        assertEquals("Keep track of the removed screws, they are different lengths.", text)
+    }
+
+    @Test
     fun `a warning containing a colon of its own is not cut in half`() {
         val (source, text) = splitNote("GENERAL: two things: the screws and the clips")
         assertEquals("two things: the screws and the clips", text)
@@ -156,9 +188,9 @@ class WarningTest {
     }
 
     @Test
-    fun `a warning containing a pipe stays whole`() {
+    fun `a warning spread over extra columns keeps every word of its sentence`() {
         val out = parseRewrite("1|EXPERT|A|do it|GENERAL: mind the clips | and the wires", 1)[0]!!
-        assertEquals("mind the clips | and the wires", out.note)
+        assertEquals("mind the clips and the wires", out.note)
         assertEquals(Provenance.GENERAL, out.noteSource)
     }
 

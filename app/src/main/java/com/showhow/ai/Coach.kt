@@ -464,18 +464,69 @@ internal fun splitNote(raw: String): Pair<Provenance, String> {
     val at = trimmed.indexOfFirst { it == ':' || it == '-' || it == ']' }
     val claimed = if (at > 0) sourceToken(trimmed.take(at)) else null
     val text = (if (claimed != null) trimmed.drop(at + 1) else trimmed)
+        .let(::stripExtraLabels)
         .trim()
         .trim('-', ' ', '|')
+
     val empty = text.isBlank() ||
         text.equals("none", true) ||
         text.equals("n/a", true) ||
-        text.equals("no warning", true)
+        text.equals("no warning", true) ||
+        echoesAbsence(text)
     return if (empty) {
         Provenance.UNKNOWN to ""
     } else {
         (claimed ?: Provenance.UNKNOWN) to text
     }
 }
+
+/**
+ * Remove the extra `EXPERT:` / `VISUAL:` / `GENERAL:` labels a model staples on
+ * mid-sentence.
+ *
+ * Observed from Gemma 3n on the device, in one note column:
+ *
+ *   "Nothing said. Visual: Detector saw nothing recognized. EXPERT: Worked in
+ *    silence. EXPERT: Nothing recognized."
+ *
+ * One label belongs at the front and says who is speaking. Every further one is
+ * the model narrating the format back, and it reaches the learner as an
+ * unreadable run-on where a single line of care should be.
+ */
+private fun stripExtraLabels(raw: String): String {
+    var out = raw
+    for (p in Provenance.entries) {
+        out = out.replace(Regex("\\b${p.name}\\s*[:\\-]\\s*", RegexOption.IGNORE_CASE), "")
+    }
+    return out.replace('|', ' ').replace(Regex("\\s{2,}"), " ")
+}
+
+/**
+ * Is this note just the prompt's own "nothing here" wording, handed back?
+ *
+ * A silent step is described to the model as "(nothing -- worked in silence)"
+ * and "(nothing recognised)", and a model with a column to fill will restate
+ * that as though it were a caution. It is not: it is the absence of one.
+ *
+ * This is the arithmetic behind "null is preferable to hallucinating a
+ * warning". A learner who reads "Detector saw nothing recognized" on a step has
+ * been told nothing about their work and charged their attention for it.
+ */
+private fun echoesAbsence(text: String): Boolean {
+    val t = text.lowercase()
+    val absent = listOf(
+        "nothing said", "nothing recognis", "nothing recogniz", "worked in silence",
+        "no photograph", "no photo for", "detector saw nothing", "camera off",
+        "nothing was said", "no instruction given", "not applicable",
+    )
+    // Only when the whole note is made of those. A real caution that happens to
+    // mention a missing photo keeps its sentence.
+    val stripped = absent.fold(t) { acc, phrase -> acc.replace(Regex("[^.]*$phrase[^.]*\\.?"), "") }
+    return stripped.filter { it.isLetter() }.length < MIN_REAL_NOTE_LETTERS
+}
+
+/** Under this many letters left, the note said nothing of its own. */
+private const val MIN_REAL_NOTE_LETTERS = 12
 
 /** SKIP is not a Provenance -- it is a verdict about the step, not its source. */
 private const val SKIP = "SKIP"

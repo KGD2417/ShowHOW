@@ -96,13 +96,17 @@ class CoachParseTest {
     // --- the extra columns -----------------------------------------------
 
     @Test
-    fun `a note becomes the step's doubt, and a pipe inside it stays in it`() {
+    fun `a note keeps its sentence, and a stray column pipe becomes a space`() {
+        // The pipe used to be preserved. The device settled it: a pipe in the
+        // note column is a sixth field the model was not asked for, not
+        // punctuation someone meant, and it reached the learner as "mind the
+        // clips|". The sentence matters; the pipe never did.
         val out = parseRewrite(
             "1|EXPERT|Pry the clips|Lift the left clip.|unclear whether | both clips come off",
             1,
         )
         assertEquals("Lift the left clip.", out[0]?.instruction)
-        assertEquals("unclear whether | both clips come off", out[0]?.note)
+        assertEquals("unclear whether both clips come off", out[0]?.note)
     }
 
     @Test
