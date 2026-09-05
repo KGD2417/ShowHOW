@@ -10,7 +10,9 @@ import com.showhow.ai.AiStack
 import com.showhow.ai.DETECTOR_MODEL
 import com.showhow.ai.Detections
 import com.showhow.ai.TakeStep
+import com.showhow.ai.AnswerEvidence
 import com.showhow.ai.Coach
+import com.showhow.ai.learnerContext
 import com.showhow.ai.DeviceAsr
 import com.showhow.ai.DetectorCaptioner
 import com.showhow.ai.GESTURE_MODEL
@@ -1062,7 +1064,11 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         val question: String,
         val text: String = "",
         val thinking: Boolean = false,
-        val fromGuide: Boolean = true,
+        /**
+         * How well supported the answer is, after grounding. The Player says so
+         * in words; it never hides the answer or a control because of it.
+         */
+        val evidence: AnswerEvidence = AnswerEvidence.UNCERTAIN,
     )
 
     private val _coachAnswer = MutableStateFlow<CoachAnswer?>(null)
@@ -1085,29 +1091,28 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         }
         _coachAnswer.value = CoachAnswer(question, thinking = true)
         coachJob = viewModelScope.launch {
-            val text = coach.answer(
-                job = g.title.ifBlank { jobFrom(g.steps) },
-                // The instruction where there is one, the expert's words where
-                // there is not. Both are true; the rewritten one reads better.
-                steps = g.steps.map { it.instruction.ifBlank { it.transcript } },
+            // Assembled here because this is the only place that knows all
+            // three: the guide on disk, the step the learner is looking at, and
+            // what the detector is reporting through the camera this second.
+            val context = learnerContext(
+                guide = g.copy(title = g.title.ifBlank { jobFrom(g.steps) }),
                 stepIndex = stepIndex,
                 question = question,
+                // COCO labels and nothing else. Empty when the camera is off.
+                seenNow = _detections.value.boxes.map { it.label },
+                toolWords = policy.value.toolWords,
             )
+            val (evidence, text) = coach.answer(context)
             if (text.isBlank()) {
                 // No model, or it failed. Say so rather than showing an empty
                 // card that looks like the app hung.
                 _coachAnswer.value = CoachAnswer(question, thinking = false)
                 return@launch
             }
-            _coachAnswer.value = CoachAnswer(
-                question = question,
-                text = text.replace(Coach.BEYOND, "").trim(),
-                thinking = false,
-                fromGuide = !text.contains(Coach.BEYOND),
-            )
+            _coachAnswer.value = CoachAnswer(question, text, thinking = false, evidence = evidence)
             // English, because that is what the coach answers in -- reading it
             // with a Hindi voice would mangle every word.
-            if (_readAloud.value) narrator.speak(text.replace(Coach.BEYOND, ""), "en")
+            if (_readAloud.value) narrator.speak(text, "en")
         }
     }
 

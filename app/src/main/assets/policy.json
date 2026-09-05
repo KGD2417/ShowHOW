@@ -29,6 +29,12 @@
     "frameDetectionWeight": 0.2,
     "frameDetectionsForFullCredit": 3.0,
 
+    "toolWords": [
+        "screwdriver", "phillips", "ph0", "ph1", "torx", "spudger", "pry",
+        "tweezers", "pliers", "brush", "paste", "anti-static", "strap",
+        "\u092a\u0947\u091a\u0915\u0938", "\u0938\u094d\u0915\u094d\u0930\u0942\u0921\u094d\u0930\u093e\u0907\u0935\u0930", "\u091a\u093f\u092e\u091f\u0940"
+    ],
+
     "coachContextChars": 4000,
 
     "autoAdvanceMs": 2000,

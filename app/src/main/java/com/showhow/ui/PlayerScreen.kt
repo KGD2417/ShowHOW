@@ -51,6 +51,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import com.showhow.ai.AnswerEvidence
 import com.showhow.ai.Gesture
 import com.showhow.capture.CameraController
 import com.showhow.core.Mode
@@ -648,18 +649,18 @@ private fun AskSheet(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
-                        .border(1.dp, if (a.fromGuide) Ink.green else Ink.blue, RoundedCornerShape(10.dp))
+                        .border(1.dp, evidenceColour(a.evidence), RoundedCornerShape(10.dp))
                         .padding(14.dp),
                 ) {
                     Text(
                         when {
                             a.thinking -> "Thinking..."
                             a.text.isBlank() -> "The coach could not answer that."
-                            a.fromGuide -> "From this guide"
-                            // The one label in the app that admits a model went
-                            // past what the expert said. It is not a disclaimer,
-                            // it is the difference between advice and evidence.
-                            else -> "General repair knowledge, not from this guide"
+                            // The labels that admit where an answer came from.
+                            // Not a disclaimer: the difference between what the
+                            // expert vouched for and what a model added, which
+                            // a learner cannot see for themselves.
+                            else -> evidenceLabel(a.evidence)
                         },
                         color = Ink.dim,
                         style = MaterialTheme.typography.bodySmall,
@@ -698,6 +699,21 @@ private fun AskSheet(
             TextButton(onClick = onDismiss) { Text("Close", color = Ink.dim) }
         }
     }
+}
+
+/** What an answer rests on, in words a learner can act on. */
+private fun evidenceLabel(e: AnswerEvidence): String = when (e) {
+    AnswerEvidence.DIRECT_GUIDE_FACT -> "From this guide - the expert said this"
+    AnswerEvidence.VISUAL_FACT -> "From what the camera can actually see"
+    AnswerEvidence.GENERAL_KNOWLEDGE -> "General repair knowledge, not from this guide"
+    AnswerEvidence.UNCERTAIN -> "Not covered here - check before you rely on this"
+}
+
+private fun evidenceColour(e: AnswerEvidence): Color = when (e) {
+    AnswerEvidence.DIRECT_GUIDE_FACT -> Ink.green
+    AnswerEvidence.VISUAL_FACT -> Ink.teal
+    AnswerEvidence.GENERAL_KNOWLEDGE -> Ink.blue
+    AnswerEvidence.UNCERTAIN -> Ink.amber
 }
 
 @Composable

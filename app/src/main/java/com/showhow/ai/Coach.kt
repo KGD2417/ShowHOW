@@ -237,38 +237,58 @@ class Coach(
     }
 
     /**
-     * A learner's question, against the whole guide.
+     * A learner's question, answered against the step they are standing in
+     * front of and the guide around it.
      *
-     * @param stepIndex where they are right now, zero based, so "this screw"
-     *   resolves to the right step.
+     * The current step is the primary context and the whole guide stays
+     * available, because "is this the one you meant?" is usually settled two
+     * steps earlier. What the model is shown is a [LearnerContext], assembled
+     * beforehand, so the exact thing it read is a value a test can build.
+     *
+     * The answer comes back in English whatever the question was asked in --
+     * the learner speaks Hindi or Marathi into the same Vosk stream as always,
+     * and Gemma at 2B writes far better English than either. It also comes back
+     * classified: see [AnswerEvidence]. That classification is a claim, so
+     * [groundedEvidence] caps it against what was actually in the context, and
+     * nothing may be promoted into DIRECT_GUIDE_FACT.
+     *
+     * @return the evidence class and the answer. An empty answer means no
+     *   model, or a model that failed -- never a refusal. Nothing here declines
+     *   to reply, and nothing it returns stops the learner doing anything.
      */
-    suspend fun answer(
-        job: String,
-        steps: List<String>,
-        stepIndex: Int,
-        question: String,
-    ): String {
-        if (question.isBlank()) return ""
-        val body = steps.mapIndexed { i, t ->
-            val here = if (i == stepIndex) "  <- they are here" else ""
-            "${i + 1}. $t$here"
-        }.joinToString("\n").take(maxContextChars())
-        return generate(
+    suspend fun answer(context: LearnerContext): Pair<AnswerEvidence, String> {
+        if (context.question.isBlank()) return AnswerEvidence.UNCERTAIN to ""
+        val out = generate(
             """
-            You are helping someone follow a repair guide, hands busy, on a
-            phone. The job: $job
-            The guide, as the expert recorded it:
+            You are helping someone follow a repair guide on a phone, hands
+            busy, in the middle of the job. Everything you know is below.
 
-            $body
-
-            They are on step ${stepIndex + 1} and ask: "$question"
+            ${renderContext(context).take(maxContextChars())}
 
             Answer in English, in at most three sentences, plain and practical.
-            Prefer what the guide says. If you have to use general repair
-            knowledge the guide does not contain, start that sentence with
-            "$BEYOND " so they know it did not come from the expert.
+            Answer even when the guide does not cover it -- they are mid-repair
+            and being told nothing is no use to them.
+
+            Begin with exactly one tag saying what your answer rests on:
+
+              [guide]      the guide above says this. Only when it really does.
+              [seen]       the detector actually reported it, in the photo or
+                           through the camera right now.
+              $BEYOND    your own repair knowledge. The guide does not say it.
+              $UNSURE  nothing above identifies the thing they are asking
+                           about. Say what is missing and what would settle it.
+
+            Never write [guide] for something you know rather than something the
+            guide says. The expert did this job and put their name to it; you
+            did not, and a learner cannot tell the difference once you have
+            blurred it.
+
+            The detector knows only ordinary object classes -- laptop, keyboard,
+            person, mouse. It has no label for a RAM module, an SSD, a heatsink
+            or a screwdriver, so never claim it saw one.
             """.trimIndent(),
-        ).trim()
+        )
+        return parseAnswer(out, context)
     }
 
     private suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
@@ -352,6 +372,15 @@ class Coach(
          * output format would.
          */
         const val BEYOND = "[general]"
+
+        /**
+         * Marks an answer nothing in the guide or the camera supports.
+         *
+         * New beside [BEYOND] rather than folded into it, because "I know this
+         * but the guide does not" and "nobody here knows" are different things
+         * to tell someone holding a screwdriver over a live board.
+         */
+        const val UNSURE = "[uncertain]"
 
         val LADDER = listOf(LlmInference.Backend.GPU, LlmInference.Backend.CPU)
     }

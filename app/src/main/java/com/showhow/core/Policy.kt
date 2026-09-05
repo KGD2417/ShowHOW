@@ -92,6 +92,21 @@ data class Policy(
     /** Boxes needed for full marks on that last term. Past this it says nothing more. */
     val frameDetectionsForFullCredit: Double = 3.0,
 
+    /**
+     * Tools worth telling the coach about when the guide names one.
+     *
+     * Matched against what the *expert* said and wrote, never against the
+     * detector: the loaded model knows ordinary object classes and has no label
+     * for a screwdriver, so a tool in this list reaching the prompt means a
+     * human named it. In policy.json so another trade can be supported without
+     * a rebuild.
+     */
+    val toolWords: List<String> = listOf(
+        "screwdriver", "phillips", "ph0", "ph1", "torx", "spudger", "pry",
+        "tweezers", "pliers", "brush", "paste", "anti-static", "strap",
+        "\u092a\u0947\u091a\u0915\u0938", "\u0938\u094d\u0915\u094d\u0930\u0942\u0921\u094d\u0930\u093e\u0907\u0935\u0930", "\u091a\u093f\u092e\u091f\u0940",
+    ),
+
     // --- Coach (the on-device model that rewrites steps and answers questions) ---
     /**
      * Chars of guide handed to the model per call.
