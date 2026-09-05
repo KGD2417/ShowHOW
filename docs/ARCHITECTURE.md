@@ -249,21 +249,45 @@ Ranked. Fix from the top.
 
 ## 11. Dependencies, and the model files that are not in git
 
-`vosk-android` (ASR) and `mediapipe-tasks-vision` (hand signs) are used.
-`mediapipe-tasks-genai` (Gemma 3n captions) and `onnxruntime-android` are still
-declared but unused — they stay in the build so the APK size and the manifest
-merge are known quantities, which is also why the debug APK is 121 MB.
+`vosk-android` (ASR) and `mediapipe-tasks-vision` (hand signs, object
+detection) are used. `mediapipe-tasks-genai` (Gemma 3n captions) and
+`onnxruntime-android` are declared but **never imported** — they are ~20 MB of
+the 121 MB debug APK and can go the next time anyone opens a compile window.
 
-The models themselves are gitignored and belong on the phone, not in the repo:
+The models themselves are gitignored and belong on the phone, not in the repo.
+Every path is under `filesDir`, which is `/data/data/com.showhow/files`:
 
 ```
-filesDir/models/vosk/                   a Vosk small model, unzipped (conf/model.conf must exist)
-filesDir/models/gesture_recognizer.task MediaPipe canned-gesture model
+models/vosk-en/                 unzipped Vosk model, conf/model.conf must exist
+models/vosk-hi/                 one directory per language, never a shared one
+models/vosk-mr/                 a Vosk model speaks exactly one language
+models/gesture_recognizer.task  MediaPipe canned-gesture model
+models/object_detector.tflite   MediaPipe object detector (EfficientDet-Lite)
 ```
 
-Both are optional at runtime. Missing Vosk means empty transcripts and the
-pause detector standing alone; missing MediaPipe means `Gesture.NONE` forever
-and the Player's buttons. Neither is ever replaced by a fake.
+Install, from a machine with the files unzipped in `./models/`:
+
+```bash
+adb push models /data/local/tmp/models
+adb shell run-as com.showhow sh -c 'cp -r /data/local/tmp/models files/'
+adb shell run-as com.showhow ls files/models        # verify before the demo
+```
+
+`run-as` is required: `filesDir` is not world-writable, so a plain
+`adb push` straight to it silently fails on a non-rooted phone.
+
+Every model is optional at runtime and nothing is ever replaced by a fake:
+
+| Missing | What happens |
+|---|---|
+| `vosk-<lang>/` | that language drops out of the picker; `NoopAsr` if all three are gone, so empty transcripts and the pause detector standing alone |
+| `gesture_recognizer.task` | `Gesture.NONE` forever, the Player's buttons still work |
+| `object_detector.tflite` | no boxes over the viewfinder, empty captions, transcript carries the step |
+
+Swapping a detector is a file push, not a build — drop a different
+MediaPipe-compatible `.tflite` in as `object_detector.tflite` and retune
+`detectMinScore` in `policy.json`. That is the whole upgrade path during Red
+Light.
 
 R8 is off in release on purpose: it breaks MediaPipe, which stack-walks to load
 its native libraries. All three ML libraries ship their own
