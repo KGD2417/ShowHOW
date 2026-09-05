@@ -26,6 +26,17 @@ data class TakeStep(
     /** Detector labels for this step's frame. Empty if no detector, no photo. */
     val caption: String,
     val hasPhoto: Boolean,
+    /**
+     * What suggests the expert took something back inside this step, in plain
+     * words, or empty.
+     *
+     * Rendered from [com.showhow.core.CorrectionEvidence] rather than passed
+     * structured, because it is going into a prompt and because it must arrive
+     * as what it is: something noticed, for the coach to weigh against the rest
+     * of the session. Nothing upstream has rewritten a word of [transcript] on
+     * the strength of it.
+     */
+    val correction: String = "",
 )
 
 /** One step after the coach has rewritten it. */
@@ -155,6 +166,12 @@ class Coach(
             - Keep the steps in the order they happened, and keep their numbers.
             - If the expert corrected themselves later, follow the correction
               and do not repeat what they took back.
+            - Where a step is marked "possible self-correction", that is
+              something noticed in the wording and the timing, not a
+              conclusion. Judge it against the rest of the session: if they did
+              change their mind, write only what they settled on; if they did
+              not -- "no problem" is not a correction -- ignore the note and
+              write the step as spoken.
             - If a step is an aside, a false start, or an instruction the expert
               abandoned, mark it SKIP instead of rewriting it.
             - Never state a fact the session does not support. If you are unsure
@@ -191,6 +208,7 @@ class Coach(
         append("\n  said: ").append(s.transcript.ifBlank { "(nothing -- worked in silence)" })
         append("\n  detector saw: ").append(s.caption.ifBlank { "(nothing recognised)" })
         if (!s.hasPhoto) append("\n  (no photograph for this step)")
+        if (s.correction.isNotBlank()) append("\n  possible self-correction: ").append(s.correction)
     }
 
     /**

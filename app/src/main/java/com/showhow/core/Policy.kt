@@ -125,6 +125,52 @@ data class Policy(
     /** Linking words needed inside that window to keep a cut. 0 disables the veto. */
     val confirmMinLinkWords: Int = 1,
 
+    // --- Correction evidence (did the expert take something back?) ---
+    /**
+     * How much a retraction word is worth on its own.
+     *
+     * Deliberately below [correctionMinStrength]. A marker alone must never
+     * clear the bar, or this becomes a keyword matcher rewriting a real
+     * person's instructions, and "no problem" is not a correction.
+     */
+    val correctionMarkerWeight: Double = 0.35,
+    /** A content word said on both sides of the marker: the same action, redone. */
+    val correctionRepeatWeight: Double = 0.40,
+    /** People stumble when they are correcting themselves. */
+    val correctionHesitationWeight: Double = 0.20,
+    /** A repair follows immediately; a minute later is a new thought. */
+    val correctionProximityWeight: Double = 0.20,
+    /**
+     * Taken off when a linking word follows the marker.
+     *
+     * The one list that says "a new step starts here" is the same list that
+     * says "this was not a repair of the last one". Heavy enough to sink a
+     * marker and a repeat together, because "undo the screw, no problem, then
+     * undo the other screw" repeats a whole verb and is still two steps.
+     */
+    val correctionLinkWordPenalty: Double = 0.50,
+    /** How close the marker must be to what it retracts, for the timing signal. */
+    val correctionWindowMs: Long = 4000,
+    /** Below this total the evidence is not worth telling the coach about. */
+    val correctionMinStrength: Double = 0.55,
+    /**
+     * Words people use to take something back, as the recogniser spells them.
+     *
+     * Devanagari first for the same reason the linking words are -- the Vosk
+     * Hindi model emits "नहीं", never "nahi", so a romanised-only list matches
+     * nothing while looking entirely correct in the config file.
+     */
+    val correctionMarkers: List<String> = listOf(
+        "नहीं", "नही", "गलत", "रुको", "अरे", "माफ", "सॉरी", "चुकले", "थांबा",
+        "no", "nahi", "nahin", "galat", "ruko", "arre", "sorry", "oops",
+        "wait", "actually", "not this", "thamba", "chukle",
+    ),
+    /** Fillers. They do not mean a correction; they raise the odds of one. */
+    val hesitationMarkers: List<String> = listOf(
+        "मतलब", "यानी", "वो", "क्या", "म्हणजे",
+        "uh", "um", "umm", "err", "hmm", "matlab", "yaani", "mhanje", "i mean",
+    ),
+
     // --- Linking words that confirm a candidate cut ---
     /**
      * Linking words **as the recogniser spells them**, which for Hindi and

@@ -31,6 +31,7 @@ import com.showhow.core.AdaptiveGate
 import com.showhow.core.Mode
 import com.showhow.core.ModeEngine
 import com.showhow.core.ModeInputs
+import com.showhow.core.correctionEvidence
 import com.showhow.core.mapSnapsToSteps
 import com.showhow.core.pickFrames
 import com.showhow.core.LinkWordConfirmer
@@ -664,7 +665,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // not per step: "phir isko nikaalo" only becomes "now lift the RAM
         // module out" if the model has already seen the three steps before it.
         _buildProgress.value = BuildStage.COACHING
-        val coached = coachSteps(steps)
+        val coached = coachSteps(steps, words)
 
         _buildProgress.value = BuildStage.SAVING
         val guide = Guide(
@@ -715,18 +716,22 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * a worse-looking guide and a true one. No model at all is the same path
      * with every line dropped, so nothing here needs a branch for it.
      */
-    private suspend fun coachSteps(steps: List<Step>): List<Step> {
+    private suspend fun coachSteps(steps: List<Step>, words: List<Word>): List<Step> {
         if (!coach.present) return steps
         // The whole take in one call. Each step carries its clock, what the
         // expert said and what the detector reported seeing -- everything the
         // coach needs to notice that step 6 takes back step 5.
-        val take = steps.map {
+        val p = policy.value
+        val take = steps.map { s ->
             TakeStep(
-                startMs = it.startMs,
-                endMs = it.endMs,
-                transcript = it.transcript,
-                caption = it.caption,
-                hasPhoto = it.photo.isNotBlank(),
+                startMs = s.startMs,
+                endMs = s.endMs,
+                transcript = s.transcript,
+                caption = s.caption,
+                hasPhoto = s.photo.isNotBlank(),
+                // Evidence and never a verdict: the transcript is untouched,
+                // and the coach is free to disagree with every word of this.
+                correction = correctionFor(s, words, p),
             )
         }
         val written = runCatching { coach.rewrite(jobFrom(steps), take) }
@@ -749,6 +754,33 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 warning = c.note.ifBlank { null } ?: s.warning,
             )
         }
+    }
+
+    /**
+     * A sentence for the prompt when a step looks like a self-correction.
+     *
+     * "Remove this screw... no, sorry, not this one. Remove the side screw." is
+     * one run of speech with no pause in it, so it is one step to the cutter
+     * and two contradictory instructions to a learner. Noticing that is worth
+     * doing; deciding it is not, which is why this hands the coach prose to
+     * read rather than a rewritten instruction.
+     *
+     * Word clocks are used when the recogniser gave any. When it did not -- the
+     * system engine returns sentences -- the step's own words are laid on its
+     * start time and the timing signal abstains rather than firing on every
+     * step, which is how LinkWordConfirmer already behaves with nothing to vote
+     * with.
+     */
+    private fun correctionFor(s: Step, words: List<Word>, p: Policy): String {
+        val timed = words
+            .filter { it.startMs >= s.startMs && it.startMs < s.endMs }
+            .map { SpokenWord(it.text, it.startMs) }
+        val untimed = s.transcript.split(WHITESPACE)
+            .filter { it.isNotBlank() }
+            .map { SpokenWord(it, s.startMs) }
+        val e = correctionEvidence(timed.ifEmpty { untimed }, p, _lang.value) ?: return ""
+        return "they say \"${e.supersededText}\", then \"${e.correctedText}\" " +
+            "(${e.signals.joinToString("; ")})"
     }
 
     /**
@@ -1309,6 +1341,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        val WHITESPACE = Regex("\\s+")
+
         /** "Step 4" and nothing else. A title the app wrote, safe to rewrite. */
         val PLACEHOLDER_TITLE = Regex("""Step \d+""")
 
