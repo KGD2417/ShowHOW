@@ -45,8 +45,10 @@ data class CoachStep(
     val instruction: String,
     /** Where [instruction] came from, after grounding. See [groundedSource]. */
     val source: Provenance = Provenance.UNKNOWN,
-    /** The coach's own doubt about this step, or empty. Becomes Step.warning. */
+    /** One line of care for this step, or empty. Becomes Step.warning. */
     val note: String = "",
+    /** Where [note] came from, after grounding. Becomes Step.warningSource. */
+    val noteSource: Provenance = Provenance.UNKNOWN,
     /**
      * The coach judged this narration not part of the job -- an aside, a false
      * start, an instruction the expert then took back.
@@ -182,14 +184,29 @@ class Coach(
             Answer with one line per step and nothing else, in exactly this
             format:
 
-            number|SOURCE|short title|one or two sentence instruction|note
+            number|SOURCE|short title|one or two sentence instruction|WHO: note
 
             SOURCE says where your instruction came from:
               EXPERT   you rewrote what the expert said in this step
               VISUAL   the expert said nothing useful; you used the detector
               GENERAL  neither -- this is your own repair knowledge
               SKIP     this step does not belong in the guide
-            The note is your doubt about this step, or empty. Keep it short.
+            The note is one short line of care for this step, or empty. Start
+            it with where it comes from, the same four words: "EXPERT: " if the
+            expert actually said it, "VISUAL: " if it follows from what the
+            detector saw, "GENERAL: " if it is your own repair knowledge.
+
+            Leave the note empty unless there is a real reason for it. Most
+            steps have none, an empty note is the right answer, and a caution
+            nobody needed costs the learner their attention on the one that
+            matters. Never invent a risk to fill the column.
+
+            Keep it to the kind of thing anyone doing this job would want said
+            out loud -- "Keep track of the removed screws." or "Be careful not
+            to pull the connector by the wires." Do not give torque figures,
+            voltages, part numbers or specific safety procedures unless the
+            expert said them: you do not know this machine, and a confident
+            number nobody checked is worse than silence.
             """.trimIndent(),
         )
         val written = parseRewrite(out, steps.size)
@@ -197,7 +214,15 @@ class Coach(
         // The model's own SOURCE is a claim, and a claim is checked against what
         // it was actually handed before it reaches a guide.
         return written.mapIndexed { i, c ->
-            c?.copy(source = groundedSource(c.source, steps[i], c.instruction))
+            c?.copy(
+                source = groundedSource(c.source, steps[i], c.instruction),
+                // Same rule for the warning, and for the same reason. A model
+                // labelling its own caution EXPERT over a step where the expert
+                // said nothing would put a safety claim in a real person's
+                // mouth, which is the worst version of the failure this whole
+                // mechanism exists to prevent.
+                noteSource = groundedSource(c.noteSource, steps[i], c.note),
+            )
         }
     }
 
@@ -365,7 +390,7 @@ internal fun parseRewrite(raw: String, expected: Int): List<CoachStep?> {
         val title = parts[2].trim().trim('*', '#', '-', ' ')
         val instruction = parts[3].trim()
         // Any further pipes belong to the note, not a sixth field.
-        val note = parts.drop(4).joinToString("|").trim().trim('-', ' ')
+        val (noteSource, note) = splitNote(parts.drop(4).joinToString("|"))
         val aside = parts[1].trim().uppercase().contains(SKIP)
 
         if (!aside && title.isBlank() && instruction.isBlank()) continue
@@ -373,7 +398,8 @@ internal fun parseRewrite(raw: String, expected: Int): List<CoachStep?> {
             title = title,
             instruction = instruction,
             source = claimed ?: Provenance.UNKNOWN,
-            note = if (note.equals("none", true) || note == "-") "" else note,
+            note = note,
+            noteSource = noteSource,
             aside = aside,
         )
     }
@@ -381,9 +407,42 @@ internal fun parseRewrite(raw: String, expected: Int): List<CoachStep?> {
 }
 
 /** The SOURCE column, or null when the model wrote something else there. */
-private fun sourceToken(raw: String): Provenance? {
+internal fun sourceToken(raw: String): Provenance? {
     val t = raw.trim().trim('*', '#', '-', ' ', '[', ']').uppercase()
     return Provenance.entries.firstOrNull { it.name == t }
+}
+
+/**
+ * A note column into who is speaking and what they said.
+ *
+ * The model is asked for "GENERAL: keep track of the screws" and will also
+ * write "[general] keep track", "GENERAL - keep track", and plain "keep track"
+ * with no label at all. All four keep the sentence, because a caution the
+ * expert may have given is worth more than a tidy column, and an unlabelled one
+ * simply arrives as UNKNOWN for grounding to settle.
+ *
+ * A note that says nothing -- blank, "none", a dash -- is no note. Null is the
+ * preferred answer and the prompt says so; this is where that is honoured
+ * rather than turned into an empty string with a source attached to it.
+ */
+internal fun splitNote(raw: String): Pair<Provenance, String> {
+    val trimmed = raw.trim().trim('*', '#', ' ', '[')
+    // ']' is a separator too, because the model reaches for the [general]
+    // bracket form it was taught for answers and writes "[GENERAL] keep track".
+    val at = trimmed.indexOfFirst { it == ':' || it == '-' || it == ']' }
+    val claimed = if (at > 0) sourceToken(trimmed.take(at)) else null
+    val text = (if (claimed != null) trimmed.drop(at + 1) else trimmed)
+        .trim()
+        .trim('-', ' ')
+    val empty = text.isBlank() ||
+        text.equals("none", true) ||
+        text.equals("n/a", true) ||
+        text.equals("no warning", true)
+    return if (empty) {
+        Provenance.UNKNOWN to ""
+    } else {
+        (claimed ?: Provenance.UNKNOWN) to text
+    }
 }
 
 /** SKIP is not a Provenance -- it is a verdict about the step, not its source. */

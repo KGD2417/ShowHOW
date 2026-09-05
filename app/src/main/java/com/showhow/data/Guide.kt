@@ -108,8 +108,29 @@ data class Step(
      * existed reads as "every step counts", which is what it meant.
      */
     val aside: Boolean = false,
-    /** Advice, never a gate. Nothing in the app blocks on this being set. */
+    /**
+     * One short line of care for this step, or null.
+     *
+     * Advice, never a gate. Nothing in this app blocks, disables or hides a
+     * control because of it -- not Next, not Continue, not verification. A
+     * warning a learner cannot dismiss is a warning that stops them finishing
+     * the job, and the expert who recorded this finished it.
+     *
+     * Null is the ordinary value and the preferred one. A guide where every
+     * step carries a caution is a guide nobody reads the cautions in, and an
+     * invented warning is worse than none: it spends the learner's attention on
+     * a risk that is not there, and teaches them the app makes things up.
+     */
     val warning: String? = null,
+    /**
+     * Who is giving that advice. See [Provenance].
+     *
+     * The whole reason a warning may exist at all. "Careful, don't pull it by
+     * the wires" is worth reading when the expert said it and worth reading
+     * differently when a model added it, and a learner is entitled to know
+     * which. [Provenance.UNKNOWN] whenever there is no warning.
+     */
+    val warningSource: Provenance = Provenance.UNKNOWN,
     /** e.g. "speech was unclear here, HANDS works better". Advice, never a gate. */
     val modeHint: String = "",
 )

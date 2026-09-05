@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import com.showhow.data.Provenance
 import com.showhow.data.Step
 import java.io.File
 
@@ -225,8 +226,18 @@ private fun StepCard(
             }
             step.warning?.takeIf { it.isNotBlank() }?.let {
                 Spacer(Modifier.height(4.dp))
-                // Advice, never a gate. It does not stop verification.
-                Text(it, style = MaterialTheme.typography.labelSmall, color = Ink.amber)
+                // Advice, never a gate. It does not stop verification, and the
+                // expert can see who is giving it before deciding to keep it.
+                Text(
+                    when (step.warningSource) {
+                        Provenance.EXPERT -> "you said: $it"
+                        Provenance.VISUAL -> "from the photo: $it"
+                        Provenance.GENERAL -> "general repair advice, not yours: $it"
+                        Provenance.UNKNOWN -> it
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Ink.amber,
+                )
             }
             if (recording) {
                 Spacer(Modifier.height(4.dp))

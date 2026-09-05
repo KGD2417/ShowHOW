@@ -749,9 +749,10 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 // evidence for it.
                 instructionSource = c.source,
                 aside = c.aside,
-                // The coach's own doubt, which is exactly what warning is for:
-                // advice, never a gate. Nothing in the app blocks on it.
+                // Advice, never a gate. Nothing in the app blocks on it --
+                // not Next, not Continue, not verification.
                 warning = c.note.ifBlank { null } ?: s.warning,
+                warningSource = if (c.note.isBlank()) s.warningSource else c.noteSource,
             )
         }
     }
