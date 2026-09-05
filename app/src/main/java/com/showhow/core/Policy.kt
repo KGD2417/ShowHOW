@@ -58,6 +58,40 @@ data class Policy(
      */
     val detectMinScore: Float = 0.55f,
 
+    // --- Frame picking (which photo represents a step) ---
+    /**
+     * Below this mean luma gradient a frame is a smear, not a photograph.
+     *
+     * 0.02 let through frames taken while the phone was still swinging; 0.10
+     * threw away every frame of a plain dark laptop lid, which is a legitimate
+     * thing for a step to look like.
+     */
+    val frameMinSharpness: Double = 0.05,
+    /** Below this average brightness the lens was against something. */
+    val frameMinLuma: Double = 22.0,
+    /** Above it, straight into a worklight. Both are frames of nothing. */
+    val frameMaxLuma: Double = 242.0,
+    /**
+     * How different a step's photo must be from the previous step's, in bits of
+     * a 64-bit dHash. Below this the guide shows the same picture twice and the
+     * learner cannot tell the steps apart.
+     */
+    val frameMinHammingFromPrevious: Int = 6,
+    /** A frame with detail in it is worth more than a flat one. */
+    val frameSharpnessWeight: Double = 0.5,
+    /**
+     * ...and one taken late in the step is worth more than one taken early.
+     *
+     * The point of a step's photograph is to show what it looks like when the
+     * step is *done*. The frame nearest the start is a picture of the work not
+     * yet begun.
+     */
+    val frameLatenessWeight: Double = 0.3,
+    /** ...and one the detector recognised something in beats one it did not. */
+    val frameDetectionWeight: Double = 0.2,
+    /** Boxes needed for full marks on that last term. Past this it says nothing more. */
+    val frameDetectionsForFullCredit: Double = 3.0,
+
     // --- Coach (the on-device model that rewrites steps and answers questions) ---
     /**
      * Chars of guide handed to the model per call.

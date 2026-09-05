@@ -19,6 +19,7 @@ import com.showhow.ai.DeviceNarrator
 import com.showhow.ai.MediaPipeGestureSource
 import com.showhow.ai.ObjectDetectSource
 import com.showhow.ai.RealSceneCheck
+import com.showhow.ai.frameStatsOf
 import com.showhow.ai.VoskAsr
 import com.showhow.ai.VoskStream
 import com.showhow.ai.gestureSourceOrNone
@@ -31,7 +32,9 @@ import com.showhow.core.Mode
 import com.showhow.core.ModeEngine
 import com.showhow.core.ModeInputs
 import com.showhow.core.mapSnapsToSteps
+import com.showhow.core.pickFrames
 import com.showhow.core.LinkWordConfirmer
+import com.showhow.core.FrameStats
 import com.showhow.core.Policy
 import com.showhow.core.Sample
 import com.showhow.core.SpokenWord
@@ -615,7 +618,23 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         _buildProgress.value = BuildStage.PHOTOS
         // Photos were snapped at live boundaries; these are the final ones.
         // There are usually more of the former, so the pairing is by time.
-        val snaps = mapSnapsToSteps(snapTimesMs.toList(), ranges)
+        //
+        // Measured first, so the choice can be about which frame is worth
+        // showing rather than only which step it fell in. A phone still moving
+        // when the shutter fired, a lens against the bench, or a repeat of the
+        // previous step's picture are all rejected, and a step whose every
+        // frame is one of those keeps no photo at all -- the Player shows the
+        // instruction and the expert's voice, which is a complete step.
+        //
+        // mapSnapsToSteps stays the answer when nothing could be measured: a
+        // phone that would not decode its own JPEGs should still produce a
+        // guide with pictures in it, chosen the old way, rather than none.
+        val stats = frameStats(id)
+        val snaps = if (stats.isEmpty()) {
+            mapSnapsToSteps(snapTimesMs.toList(), ranges)
+        } else {
+            pickFrames(stats, ranges, p).map { it ?: -1 }
+        }
         meanWordConfidence = meanConfidence(words.takeLast(p.speechUnclearWindowWords))
 
         _buildProgress.value = BuildStage.CAPTIONS
@@ -657,6 +676,34 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         refreshLibrary()
         return id
     }
+
+    /**
+     * Measure every snap taken during the take.
+     *
+     * Runs once, over frames already on disk, after recording has stopped --
+     * so it costs a decode per photo at a moment when nothing else is
+     * competing for the phone. Sampled at 1/4 on the way in, because the
+     * measurements are taken at 64x64 and decoding a full 1280x960 to throw
+     * away 99% of it is how this app used to run out of memory.
+     *
+     * A frame that will not decode is simply left out. It cannot be scored, and
+     * a frame that cannot be scored cannot be chosen, which is the correct
+     * outcome rather than an error.
+     */
+    private fun frameStats(id: String): List<FrameStats> =
+        snapTimesMs.mapIndexedNotNull { i, tMs ->
+            val file = guides.snapFile(id, i)
+            if (!file.isFile) return@mapIndexedNotNull null
+            val bmp = decodeUpright(file, 4) ?: return@mapIndexedNotNull null
+            try {
+                // Detector boxes are evidence that something recognisable is in
+                // shot. It only knows COCO classes, so this is a count and
+                // never a claim about what the thing was.
+                frameStatsOf(bmp, i, tMs, detector.onFrame(bmp, 0).boxes.size)
+            } finally {
+                bmp.recycle()
+            }
+        }
 
     /**
      * The coach's pass over a freshly cut guide.

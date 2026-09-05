@@ -1,6 +1,7 @@
 package com.showhow.ai
 
 import android.graphics.Bitmap
+import com.showhow.core.FrameStats
 import com.showhow.core.SceneHash
 
 /**
@@ -37,3 +38,40 @@ class RealSceneCheck : SceneCheck {
         const val SIZE = 32
     }
 }
+
+/**
+ * Measure one snapped frame so [com.showhow.core.pickFrames] can judge it.
+ *
+ * The only Android in the whole business of choosing a photograph: pixels out
+ * of a Bitmap and into four numbers. Everything that decides anything is
+ * arithmetic in core, on those numbers, testable without a phone.
+ *
+ * Measured at 64x64 rather than the scene check's 32x32, because sharpness is
+ * a question about fine detail and 32 pixels of a workbench is all fine detail.
+ * The dHash still samples its own 9x8 grid off this, unchanged.
+ *
+ * @param detections how many boxes the detector returned for this frame, or 0.
+ *   A count, never a claim about what was in shot -- the loaded model knows
+ *   COCO classes and nothing about a RAM module.
+ */
+fun frameStatsOf(bitmap: Bitmap, snapIndex: Int, tMs: Long, detections: Int): FrameStats {
+    val size = MEASURE_SIZE
+    val small = if (bitmap.width == size && bitmap.height == size) {
+        bitmap
+    } else {
+        Bitmap.createScaledBitmap(bitmap, size, size, true)
+    }
+    val px = IntArray(size * size)
+    small.getPixels(px, 0, size, 0, 0, size, size)
+    if (small !== bitmap) small.recycle()
+    return FrameStats(
+        snapIndex = snapIndex,
+        tMs = tMs,
+        sharpness = SceneHash.sharpness(px, size, size),
+        meanLuma = SceneHash.meanLuma(px),
+        dHash = SceneHash.dHash(px, size, size),
+        detections = detections,
+    )
+}
+
+private const val MEASURE_SIZE = 64

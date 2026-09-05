@@ -20,6 +20,15 @@
 
     "detectMinScore": 0.55,
 
+    "frameMinSharpness": 0.05,
+    "frameMinLuma": 22.0,
+    "frameMaxLuma": 242.0,
+    "frameMinHammingFromPrevious": 6,
+    "frameSharpnessWeight": 0.5,
+    "frameLatenessWeight": 0.3,
+    "frameDetectionWeight": 0.2,
+    "frameDetectionsForFullCredit": 3.0,
+
     "coachContextChars": 4000,
 
     "autoAdvanceMs": 2000,

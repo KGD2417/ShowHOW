@@ -73,6 +73,55 @@ object SceneHash {
         return (0.7 * structure + 0.3 * colour).coerceIn(0.0, 1.0).toFloat()
     }
 
+    /**
+     * How much fine detail the frame has, 0.0 flat .. 1.0 sharp.
+     *
+     * Mean absolute luma gradient between neighbouring pixels. Not a focus
+     * metric in any optical sense -- it cannot tell a soft subject from a
+     * shaken camera -- but it separates the two frames that matter here: a
+     * photograph of a workbench, and the smear a phone takes while its owner is
+     * still moving it. That is the whole job.
+     *
+     * Deliberately scale-free and deterministic, so the same pixels always give
+     * the same number and the picker can be tested on the JVM with made-up
+     * frames.
+     */
+    fun sharpness(argb: IntArray, width: Int, height: Int): Double {
+        if (argb.isEmpty() || width < 2 || height < 2) return 0.0
+        var sum = 0L
+        var n = 0
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val i = y * width + x
+                if (i >= argb.size) break
+                val here = luma(argb[i])
+                if (x + 1 < width && i + 1 < argb.size) {
+                    sum += kotlin.math.abs(here - luma(argb[i + 1])); n++
+                }
+                val below = i + width
+                if (y + 1 < height && below < argb.size) {
+                    sum += kotlin.math.abs(here - luma(argb[below])); n++
+                }
+            }
+        }
+        return if (n == 0) 0.0 else (sum.toDouble() / n / 255.0).coerceIn(0.0, 1.0)
+    }
+
+    /**
+     * Average brightness, 0 black .. 255 white.
+     *
+     * A lens against a bench, a phone in a pocket and a frame straight into a
+     * worklight are all things the expert photographed by accident, and all
+     * three are useless as a picture of what a step should look like. None of
+     * them is blurry, so sharpness alone does not catch them.
+     */
+    fun meanLuma(argb: IntArray): Double {
+        if (argb.isEmpty()) return 0.0
+        var sum = 0L
+        for (p in argb) sum += luma(p)
+        return sum.toDouble() / argb.size
+    }
+
     private fun sample(argb: IntArray, w: Int, h: Int, x: Int, y: Int, gw: Int, gh: Int): Int {
         if (argb.isEmpty() || w <= 0 || h <= 0) return 0
         val sx = ((x.toLong() * w) / gw).toInt().coerceIn(0, w - 1)
