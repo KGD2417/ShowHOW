@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
 import com.showhow.ai.DETECTOR_MODEL
 import com.showhow.ai.Detections
+import com.showhow.ai.TakeStep
 import com.showhow.ai.Coach
 import com.showhow.ai.DeviceAsr
 import com.showhow.ai.DetectorCaptioner
@@ -667,7 +668,19 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun coachSteps(steps: List<Step>): List<Step> {
         if (!coach.present) return steps
-        val written = runCatching { coach.rewrite(jobFrom(steps), steps.map { it.transcript }) }
+        // The whole take in one call. Each step carries its clock, what the
+        // expert said and what the detector reported seeing -- everything the
+        // coach needs to notice that step 6 takes back step 5.
+        val take = steps.map {
+            TakeStep(
+                startMs = it.startMs,
+                endMs = it.endMs,
+                transcript = it.transcript,
+                caption = it.caption,
+                hasPhoto = it.photo.isNotBlank(),
+            )
+        }
+        val written = runCatching { coach.rewrite(jobFrom(steps), take) }
             .getOrElse {
                 android.util.Log.w(TAG, "coach pass failed, keeping the raw steps", it)
                 emptyList()
@@ -677,10 +690,14 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             s.copy(
                 title = c.title.ifBlank { s.title },
                 instruction = c.instruction,
-                // Recorded here because this is the only place that still knows
-                // what the coach was handed for this step. Once the guide is on
-                // disk the inputs are gone and the label could only be guessed.
-                instructionSource = provenanceOf(s.transcript, s.caption, c.instruction),
+                // Already grounded against what the coach was handed, inside
+                // Coach.rewrite -- a claimed source is never stronger than the
+                // evidence for it.
+                instructionSource = c.source,
+                aside = c.aside,
+                // The coach's own doubt, which is exactly what warning is for:
+                // advice, never a gate. Nothing in the app blocks on it.
+                warning = c.note.ifBlank { null } ?: s.warning,
             )
         }
     }

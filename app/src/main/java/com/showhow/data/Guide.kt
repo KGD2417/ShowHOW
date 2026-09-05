@@ -97,6 +97,17 @@ data class Step(
      * than as the expert's word.
      */
     val instructionSource: Provenance = Provenance.UNKNOWN,
+    /**
+     * The coach judged this step not part of the job -- an aside, a false
+     * start, or an instruction the expert then took back.
+     *
+     * A flag and never a deletion. The step still owns its slice of the take
+     * and its photograph, and both are evidence of what actually happened; the
+     * step ranges also have to tile the take exactly, so removing one would
+     * leave a hole. Defaults to false, so a guide written before this field
+     * existed reads as "every step counts", which is what it meant.
+     */
+    val aside: Boolean = false,
     /** Advice, never a gate. Nothing in the app blocks on this being set. */
     val warning: String? = null,
     /** e.g. "speech was unclear here, HANDS works better". Advice, never a gate. */

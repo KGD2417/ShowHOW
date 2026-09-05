@@ -3,12 +3,49 @@ package com.showhow.ai
 import android.content.Context
 import android.util.Log
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.showhow.data.Provenance
+import com.showhow.data.provenanceOf
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** One step after the coach has rewritten it: an imperative title and the how. */
-data class CoachStep(val title: String, val instruction: String)
+/**
+ * One candidate step as it comes out of the cutter, with everything known about
+ * it. What the coach is given.
+ *
+ * [caption] is the object detector's labels, not a description of the photo:
+ * the coach model is text-only (see [Coach]) and has never seen an image. It is
+ * the difference between "the detector reported laptop, screwdriver in this
+ * step's frame" and "the model looked at the photo", and only the first is true.
+ */
+data class TakeStep(
+    val startMs: Long,
+    val endMs: Long,
+    /** What the expert actually said here. Empty on a silent step. */
+    val transcript: String,
+    /** Detector labels for this step's frame. Empty if no detector, no photo. */
+    val caption: String,
+    val hasPhoto: Boolean,
+)
+
+/** One step after the coach has rewritten it. */
+data class CoachStep(
+    val title: String,
+    val instruction: String,
+    /** Where [instruction] came from, after grounding. See [groundedSource]. */
+    val source: Provenance = Provenance.UNKNOWN,
+    /** The coach's own doubt about this step, or empty. Becomes Step.warning. */
+    val note: String = "",
+    /**
+     * The coach judged this narration not part of the job -- an aside, a false
+     * start, an instruction the expert then took back.
+     *
+     * A flag and never a deletion. The step still owns a slice of the take and
+     * a photograph, and those are evidence; dropping it would also break the
+     * invariant that step ranges tile the take exactly.
+     */
+    val aside: Boolean = false,
+)
 
 /**
  * The second person in the app.
@@ -70,39 +107,90 @@ class Coach(
     val present: Boolean get() = modelFile.isFile
 
     /**
-     * The expert's steps, rewritten as instructions a stranger can follow.
+     * The whole take, read at once, rewritten into a guide a stranger can
+     * follow.
      *
-     * Returns as many as the model gave back, indexed the same as [rawSteps].
-     * A short list is normal and a missing entry means "keep what the expert
-     * said" -- the caller falls back per step rather than throwing the rewrite
-     * away, because eight good steps and two raw ones is a better guide than
-     * ten raw ones.
+     * One call and not one per step, and that is the entire point of this
+     * method. A step-at-a-time rewrite cannot know that step 4 undoes step 3,
+     * that "no wait, the other one" in step 6 corrects step 5, or that step 2
+     * was the expert's phone ringing. Reading the take end to end is what lets
+     * it drop an abandoned instruction instead of politely rewriting it into
+     * the guide as though the expert meant it.
+     *
+     * **It is given evidence, not pictures.** The model is text-only: the
+     * runtime has `addImage` and `setEnableVisionModality`, but they need a
+     * vision-capable model and this is Gemma at 2B. So each step arrives with
+     * its clock, what the expert said, and what the *object detector* reported
+     * in its frame -- which is a real observation about the photo, made by a
+     * model that did look at it. Actual multimodal reasoning is a separate job
+     * and needs a different .task file; nothing here pretends otherwise.
+     *
+     * Returns one slot per input step, null where the model gave nothing back,
+     * so the caller keeps the expert's own words there rather than blanking a
+     * step the model merely skipped.
      */
-    suspend fun rewrite(job: String, rawSteps: List<String>): List<CoachStep> {
-        if (rawSteps.isEmpty()) return emptyList()
-        val body = rawSteps.mapIndexed { i, t -> "${i + 1}. ${t.ifBlank { "(said nothing)" }}" }
-            .joinToString("\n")
+    suspend fun rewrite(job: String, steps: List<TakeStep>): List<CoachStep?> {
+        if (steps.isEmpty()) return emptyList()
+        val body = steps.mapIndexed { i, s -> describe(i + 1, s) }
+            .joinToString("\n\n")
             .take(maxContextChars())
         val out = generate(
             """
-            You are turning one expert's spoken walkthrough into a written guide.
+            You are turning one expert's recorded repair session into a written
+            guide for someone doing the job for the first time.
+
             The job: $job
-            Below is what the expert said during each step, transcribed. It is
-            informal, may be in Hindi or Marathi, and may be garbled.
+
+            Below is the whole session in order. For each step you get its time,
+            what the expert said (transcribed, informal, possibly Hindi or
+            Marathi, possibly garbled), and what an object detector reported
+            seeing in that step's photograph. You cannot see the photographs
+            yourself; the detector's labels are all the visual evidence there is.
 
             $body
 
-            Rewrite each step in English as an instruction someone doing this
-            for the first time can follow. Keep the same numbering and the same
-            number of steps. Do not invent a step that is not there.
-            Answer with one line per step, in exactly this format:
-            number|short title|one or two sentence instruction
-            Nothing else.
+            Read all of it before writing anything. Then write the guide.
+
+            Rules:
+            - Keep the steps in the order they happened, and keep their numbers.
+            - If the expert corrected themselves later, follow the correction
+              and do not repeat what they took back.
+            - If a step is an aside, a false start, or an instruction the expert
+              abandoned, mark it SKIP instead of rewriting it.
+            - Never state a fact the session does not support. If you are unsure
+              what happened in a step, say so in the note rather than guessing.
+            - Do not invent tools, part names, torque figures or measurements
+              that were neither spoken nor detected.
+
+            Answer with one line per step and nothing else, in exactly this
+            format:
+
+            number|SOURCE|short title|one or two sentence instruction|note
+
+            SOURCE says where your instruction came from:
+              EXPERT   you rewrote what the expert said in this step
+              VISUAL   the expert said nothing useful; you used the detector
+              GENERAL  neither -- this is your own repair knowledge
+              SKIP     this step does not belong in the guide
+            The note is your doubt about this step, or empty. Keep it short.
             """.trimIndent(),
         )
-        val steps = parseRewrite(out, rawSteps.size)
-        Log.i(TAG, "rewrote ${steps.count { it != null }}/${rawSteps.size} steps")
-        return steps.map { it ?: CoachStep("", "") }
+        val written = parseRewrite(out, steps.size)
+        Log.i(TAG, "rewrote ${written.count { it != null }}/${steps.size} steps")
+        // The model's own SOURCE is a claim, and a claim is checked against what
+        // it was actually handed before it reaches a guide.
+        return written.mapIndexed { i, c ->
+            c?.copy(source = groundedSource(c.source, steps[i], c.instruction))
+        }
+    }
+
+    /** One step as the prompt sees it. */
+    private fun describe(n: Int, s: TakeStep): String = buildString {
+        append("Step ").append(n)
+        append(" [").append(clock(s.startMs)).append(" - ").append(clock(s.endMs)).append("]")
+        append("\n  said: ").append(s.transcript.ifBlank { "(nothing -- worked in silence)" })
+        append("\n  detector saw: ").append(s.caption.ifBlank { "(nothing recognised)" })
+        if (!s.hasPhoto) append("\n  (no photograph for this step)")
     }
 
     /**
@@ -227,30 +315,95 @@ class Coach(
 }
 
 /**
- * `number|title|instruction` lines into a list of [expected] slots.
+ * `number|SOURCE|title|instruction|note` lines into a list of [expected] slots.
  *
- * Written to survive a small model rather than to validate it: the
- * numbering is what places a line, so a model that skips step 3, emits
- * them out of order, wraps the lot in markdown or adds a sentence of
- * preamble still lands every line it got right. Anything unparseable is
- * dropped, and its slot stays null so the caller keeps the expert's own
- * words there.
+ * A line format and not JSON, deliberately. The runtime has no constrained
+ * decoding -- there is no schema, grammar or JSON class anywhere in
+ * tasks-genai 0.10.35 -- so whatever shape is asked for is a request, not a
+ * guarantee. JSON from a 2B model fails as one piece: a single unbalanced brace
+ * three quarters of the way down costs every step, including the eight it got
+ * right. Lines fail one at a time.
+ *
+ * Written to survive a small model rather than to validate it: the numbering is
+ * what places a line, so a model that skips step 3, emits them out of order,
+ * wraps the lot in markdown or adds a sentence of preamble still lands every
+ * line it got right. Anything unparseable is dropped and its slot stays null,
+ * so the caller keeps the expert's own words there.
  */
 internal fun parseRewrite(raw: String, expected: Int): List<CoachStep?> {
     val out = arrayOfNulls<CoachStep>(expected)
     for (line in raw.lineSequence()) {
         val parts = line.split('|')
-        if (parts.size < 3) continue
-        // Leading "**3." or "- 3" from a model that would not stop
-        // formatting: take the first run of digits on the line.
+        // number, source, title, instruction. The note is optional because a
+        // model with no doubt to report tends to just stop.
+        if (parts.size < 4) continue
+        // Leading "**3." or "- 3" from a model that would not stop formatting:
+        // take the first run of digits on the line.
         val n = Regex("\\d+").find(parts[0])?.value?.toIntOrNull() ?: continue
         val i = n - 1
         if (i !in 0 until expected || out[i] != null) continue
-        val title = parts[1].trim().trim('*', '#', '-', ' ')
-        // Any further pipes belong to the instruction, not a fourth field.
-        val instruction = parts.drop(2).joinToString("|").trim()
-        if (title.isBlank() && instruction.isBlank()) continue
-        out[i] = CoachStep(title, instruction)
+
+        val claimed = sourceToken(parts[1])
+        val title = parts[2].trim().trim('*', '#', '-', ' ')
+        val instruction = parts[3].trim()
+        // Any further pipes belong to the note, not a sixth field.
+        val note = parts.drop(4).joinToString("|").trim().trim('-', ' ')
+        val aside = parts[1].trim().uppercase().contains(SKIP)
+
+        if (!aside && title.isBlank() && instruction.isBlank()) continue
+        out[i] = CoachStep(
+            title = title,
+            instruction = instruction,
+            source = claimed ?: Provenance.UNKNOWN,
+            note = if (note.equals("none", true) || note == "-") "" else note,
+            aside = aside,
+        )
     }
     return out.toList()
+}
+
+/** The SOURCE column, or null when the model wrote something else there. */
+private fun sourceToken(raw: String): Provenance? {
+    val t = raw.trim().trim('*', '#', '-', ' ', '[', ']').uppercase()
+    return Provenance.entries.firstOrNull { it.name == t }
+}
+
+/** SKIP is not a Provenance -- it is a verdict about the step, not its source. */
+private const val SKIP = "SKIP"
+
+/**
+ * The model's claimed source, capped by the evidence it was actually handed.
+ *
+ * The coach is asked where each instruction came from, and its answer is a
+ * claim like any other. A model that writes EXPERT over a step where the expert
+ * said nothing is not lying on purpose -- it is a 2B model filling a column --
+ * but the result would be a guide attributing invented words to a real person,
+ * which is the one failure this whole provenance mechanism exists to prevent.
+ *
+ * So a claim may always be *weaker* than the evidence and never stronger. The
+ * model saying "I used the photo, not the words" over a step that has both is
+ * honoured; the model saying "the expert said this" over silence is not. A
+ * model that admits UNKNOWN is always believed.
+ */
+internal fun groundedSource(
+    claimed: Provenance,
+    step: TakeStep,
+    instruction: String,
+): Provenance {
+    val ceiling = provenanceOf(step.transcript, step.caption, instruction)
+    return if (rank(claimed) < rank(ceiling)) claimed else ceiling
+}
+
+/** How strong a claim each value makes. UNKNOWN claims nothing. */
+private fun rank(p: Provenance): Int = when (p) {
+    Provenance.EXPERT -> 3
+    Provenance.VISUAL -> 2
+    Provenance.GENERAL -> 1
+    Provenance.UNKNOWN -> 0
+}
+
+/** mm:ss on the take's clock, for the prompt. */
+internal fun clock(ms: Long): String {
+    val total = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(total / 60, total % 60)
 }
