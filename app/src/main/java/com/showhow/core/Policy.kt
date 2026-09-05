@@ -51,8 +51,12 @@ data class Policy(
     val userFarFaceHeightPx: Double = 90.0,
 
     // --- Object detection (the boxes over the viewfinder) ---
-    /** Below this score a box is not drawn. Every box on screen is a claim. */
-    val detectMinScore: Float = 0.4f,
+    /**
+     * Below this score a box is not drawn. Every box on screen is a claim.
+     *
+     * 0.4 put four half-guesses on the glass at once and read as noise.
+     */
+    val detectMinScore: Float = 0.55f,
 
     // --- Player ---
     /** How long the Player waits after a step's audio ends before moving on. */

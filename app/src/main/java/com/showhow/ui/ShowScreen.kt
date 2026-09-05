@@ -104,9 +104,11 @@ fun ShowScreen(vm: ShowHowViewModel) {
 
             Telemetry(
                 listOf(
-                    TelemetryRow("on-device", "recognizer", vm.detectorDelegate),
+                    TelemetryRow("${detections.boxes.size} seen", "detector", vm.detectorDelegate),
+                    TelemetryRow("hand signs", "gestures", vm.gestureDelegate),
+                    TelemetryRow("${lang.uppercase()} speech", "vosk", "CPU"),
                     TelemetryRow("${debug.liveCuts} cut", "step cutter", "CPU"),
-                    TelemetryRow("${debug.snaps} kept", "sharpest frame", "CPU"),
+                    TelemetryRow("${debug.snaps} kept", "photos", "CPU"),
                     // Not a label: the gate really is sitting on the room floor,
                     // and these are the two numbers proving it.
                     TelemetryRow("%.0f".format(debug.floorDb), "room floor dBFS"),

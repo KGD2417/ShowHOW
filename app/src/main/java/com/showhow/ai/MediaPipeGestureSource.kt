@@ -58,6 +58,11 @@ class MediaPipeGestureSource(
     @Volatile
     private var dead = false
 
+    /** Which delegate took the job, for the telemetry panel. */
+    @Volatile
+    var delegateName: String = "--"
+        private set
+
     override fun start(): Flow<Gesture> = _gestures
 
     /**
@@ -121,6 +126,7 @@ class MediaPipeGestureSource(
                 }
                 if (built != null) {
                     Log.i(TAG, "gesture model on $delegate in ${System.currentTimeMillis() - started} ms")
+                    delegateName = delegate.name
                     recognizer = built
                     return built
                 }

@@ -7,6 +7,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -61,7 +62,14 @@ class CameraController(private val context: Context) {
             val p = future.get()
             provider = p
 
-            val preview = Preview.Builder().build()
+            // All three use cases are pinned to 4:3 so they see the same slice
+            // of the sensor. Left alone CameraX gives Preview 16:9 and analysis
+            // 4:3, and then boxes are computed from a wider field of view than
+            // the one on screen. No arithmetic in the overlay can rescue a box
+            // drawn from a different picture.
+            val preview = Preview.Builder()
+                .setResolutionSelector(fourThree().build())
+                .build()
                 .also { it.surfaceProvider = view.surfaceProvider }
 
             val analysis = ImageAnalysis.Builder()
@@ -117,9 +125,13 @@ class CameraController(private val context: Context) {
         )
     }
 
-    /** Nearest available size, then whatever the camera has if it cannot. */
-    private fun resolution(size: Size): ResolutionSelector =
+    private fun fourThree(): ResolutionSelector.Builder =
         ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+
+    /** 4:3, at the nearest available size to the one asked for. */
+    private fun resolution(size: Size): ResolutionSelector =
+        fourThree()
             .setResolutionStrategy(
                 ResolutionStrategy(size, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER),
             )

@@ -2,6 +2,7 @@ package com.showhow.ui
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import androidx.camera.core.ImageAnalysis
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -130,8 +131,11 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private var lastSeenAtMs = 0L
 
-    /** Which delegate the detector landed on, for the telemetry panel. */
+    /** Which delegate each vision model landed on, for the telemetry panel. */
     val detectorDelegate: String get() = detector.delegateName
+
+    val gestureDelegate: String
+        get() = (gestureSource as? MediaPipeGestureSource)?.delegateName ?: "--"
 
     /**
      * How much the live camera looks like the photo saved for the step being
@@ -184,10 +188,16 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             val hands = gestureSource as? MediaPipeGestureSource
             val reference = sceneReference
             val frame = runCatching { proxy.toBitmap() }.getOrNull()
+                ?.let { upright(it, proxy.imageInfo.rotationDegrees) }
             if (frame != null) {
-                val rotation = proxy.imageInfo.rotationDegrees
-                hands?.onFrame(frame, rotation)
-                val seen = detector.onFrame(frame, rotation)
+                // Rotated once here and handed to everything already upright.
+                // MediaPipe's own Android samples rotate the bitmap rather than
+                // pass a rotation into ImageProcessingOptions, which sidesteps
+                // whose sign convention wins. It also fixes the scene check,
+                // which was comparing a sideways camera frame against an
+                // upright photo and calling a correct bench wrong.
+                hands?.onFrame(frame, 0)
+                val seen = detector.onFrame(frame, 0)
                 val now = System.currentTimeMillis()
                 if (seen.boxes.isNotEmpty()) {
                     lastSeenAtMs = now
@@ -326,6 +336,15 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshLibrary() {
         _library.value = guides.list()
+    }
+
+    /** Turn a camera frame the right way up. A no-op when it already is. */
+    private fun upright(frame: Bitmap, rotationDegrees: Int): Bitmap {
+        if (rotationDegrees % 360 == 0) return frame
+        val m = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+        return runCatching {
+            Bitmap.createBitmap(frame, 0, 0, frame.width, frame.height, m, true)
+        }.getOrDefault(frame)
     }
 
     /**
