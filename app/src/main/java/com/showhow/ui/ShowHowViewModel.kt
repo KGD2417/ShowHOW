@@ -13,6 +13,7 @@ import com.showhow.ai.DeviceAsr
 import com.showhow.ai.DetectorCaptioner
 import com.showhow.ai.GESTURE_MODEL
 import com.showhow.ai.Gesture
+import com.showhow.ai.DeviceNarrator
 import com.showhow.ai.MediaPipeGestureSource
 import com.showhow.ai.ObjectDetectSource
 import com.showhow.ai.RealSceneCheck
@@ -125,6 +126,36 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * but disk.
      */
     private val voskAsr = VoskAsr.orNoop(File(app.filesDir, VoskAsr.MODELS_DIR))
+
+    /**
+     * Reads a step aloud, offline, in a synthetic voice.
+     *
+     * A second way to hear a step, not a replacement for the first. The
+     * expert's own recording stays on disk and stays the default: it is the
+     * evidence that a real person did this job, and a synthetic voice reading a
+     * transcript is only ever as good as the transcript. Where the recogniser
+     * misheard, the expert's audio is still right and the spoken version is
+     * confidently wrong -- so the person following gets both and picks.
+     */
+    private val narrator = DeviceNarrator(app)
+
+    /** Read the step aloud instead of playing the take. Off by default. */
+    private val _readAloud = MutableStateFlow(false)
+    val readAloud: StateFlow<Boolean> = _readAloud.asStateFlow()
+
+    fun setReadAloud(on: Boolean) {
+        _readAloud.value = on
+        if (!on) narrator.stop()
+    }
+
+    /** Speak one step. Returns when the phone has finished saying it. */
+    suspend fun speak(text: String) {
+        narrator.speak(text, _lang.value)
+    }
+
+    fun stopSpeaking() {
+        narrator.stop()
+    }
 
     /** Nothing in here is canned any more. Gemma would only make it prettier. */
     val ai: AiStack = AiStack(
@@ -874,6 +905,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { detector.close() }
         sceneReference?.recycle()
         sceneReference = null
+        narrator.release()
         super.onCleared()
     }
 

@@ -58,6 +58,7 @@ import com.showhow.data.Guide
 import com.showhow.data.Step
 import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Running a guide. The screen the jury watches, and the only one with four
@@ -85,7 +86,9 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     val similarity by vm.sceneSimilarity.collectAsStateWithLifecycle()
     val detections by vm.detections.collectAsStateWithLifecycle()
     val policy by vm.policy.collectAsStateWithLifecycle()
+    val readAloud by vm.readAloud.collectAsStateWithLifecycle()
 
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var index by remember { mutableIntStateOf(0) }
     var cameraOn by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf(false) }
@@ -135,9 +138,20 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
         }
     }
 
-    LaunchedEffect(step.startMs, guideId) {
-        playStep(player, vm.guides.dir(guideId), vm.guides.takeFile(guideId), step)
+    val spoken = step.transcript.ifBlank { step.caption.ifBlank { step.title } }
+
+    LaunchedEffect(step.startMs, guideId, readAloud) {
+        if (readAloud) {
+            // The synthetic voice reads what the recogniser heard. Where it
+            // misheard, the expert's own audio is one tap away and still right.
+            player.pause()
+            vm.speak(spoken)
+        } else {
+            vm.stopSpeaking()
+            playStep(player, vm.guides.dir(guideId), vm.guides.takeFile(guideId), step)
+        }
     }
+    DisposableEffect(Unit) { onDispose { vm.stopSpeaking() } }
 
     // Playback position, and the pause after it before the next step.
     var progress by remember { mutableStateOf(0f) }
@@ -265,13 +279,19 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                     label = when {
                         holding -> "Held"
                         advanceInMs > 0 -> "Next step in ${(advanceInMs / 1000) + 1}s"
+                        readAloud -> "Reading it out"
                         else -> "Playing your recording"
                     },
+                    readAloud = readAloud,
+                    onToggleVoice = { vm.setReadAloud(!readAloud) },
                     progress = progress,
                     position = "${index + 1} / ${guide.steps.size}",
                     accent = accent,
                     holding = holding,
-                    onAgain = { playStep(player, vm.guides.dir(guideId), vm.guides.takeFile(guideId), step) },
+                    onAgain = {
+                        if (readAloud) scope.launch { vm.speak(spoken) }
+                        else playStep(player, vm.guides.dir(guideId), vm.guides.takeFile(guideId), step)
+                    },
                     onHold = {
                         holding = !holding
                         if (holding) player.pause() else player.play()
@@ -384,9 +404,11 @@ private fun AudioBar(
     position: String,
     accent: Color,
     holding: Boolean,
+    readAloud: Boolean,
     onAgain: () -> Unit,
     onHold: () -> Unit,
     onAsk: () -> Unit,
+    onToggleVoice: () -> Unit,
 ) {
     Column(
         Modifier
@@ -401,7 +423,18 @@ private fun AudioBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(label, color = Ink.text, style = MaterialTheme.typography.bodyMedium)
-            Text(position, style = Mono, color = Ink.dim)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // A choice, not a setting buried elsewhere: the expert's own
+                // voice, or the phone reading what it heard.
+                Text(
+                    if (readAloud) "expert's voice" else "read it out",
+                    Modifier.clickable(onClick = onToggleVoice),
+                    color = accent,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(position, style = Mono, color = Ink.dim)
+            }
         }
         Spacer(Modifier.height(8.dp))
         Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(Ink.line)) {
