@@ -43,7 +43,7 @@ STEP_OF = ""                 # top-right, "STEP 3 / 7"
 # Close on the laptop, not the room: the whole point of the shot is that a
 # judge can see the screws come out.
 SHOT = (640, 480)
-VIEW = p.computeViewMatrix([0.92, -0.70, 1.12], [0.46, 0.02, 0.68], [0, 0, 1])
+VIEW = p.computeViewMatrix([1.02, -0.80, 1.24], [0.44, 0.02, 0.71], [0, 0, 1])
 PROJ = p.computeProjectionMatrixFOV(45, SHOT[0] / SHOT[1], 0.05, 3)
 LIGHT = [-0.6, -0.9, 1.4]
 
