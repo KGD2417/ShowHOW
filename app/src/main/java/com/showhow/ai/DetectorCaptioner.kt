@@ -21,8 +21,19 @@ import java.io.File
  */
 class DetectorCaptioner(private val detector: ObjectDetectSource) : Captioner {
 
-    override suspend fun caption(jpg: File): String {
-        if (!jpg.exists()) return ""
+    override suspend fun caption(jpg: File): String = captionOf(labels(jpg))
+
+    /**
+     * Every box the detector found in this photograph, one entry per box, most
+     * confident first.
+     *
+     * With the repeats left in, which is the whole reason this exists beside
+     * [caption]. Two philips heads is two entries, and that is what lets a step
+     * check tell "both screws are out" from "one is". The caption drops them
+     * because a list that reads "screw, screw, laptop" is not a description.
+     */
+    suspend fun labels(jpg: File): List<String> {
+        if (!jpg.exists()) return emptyList()
         // The step photos are capped at 1280x960 and the detector downscales
         // anyway, so decoding at half size costs nothing and saves a few MB
         // of churn per guide.
@@ -33,23 +44,28 @@ class DetectorCaptioner(private val detector: ObjectDetectSource) : Captioner {
                 decoder.setTargetSampleSize(2)
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
-        }.getOrNull() ?: return ""
+        }.getOrNull() ?: return emptyList()
 
         return try {
             // The photo is already upright on disk, unlike a camera frame.
             detector.onFrame(bitmap, 0).boxes
                 .sortedByDescending { it.score }
                 .map { it.label }
-                .distinct()
-                .take(MAX_THINGS)
-                .joinToString(", ")
         } finally {
             bitmap.recycle()
         }
     }
-
-    private companion object {
-        /** Past three or four, a list stops being a description. */
-        const val MAX_THINGS = 4
-    }
 }
+
+/**
+ * A detector's labels as a line a person reads. Distinct, and cut short.
+ *
+ * Separate from the labels themselves because they are two different things
+ * with two different jobs: this one goes on a screen and into a prompt, the
+ * list goes into an arithmetic comparison and keeps its repeats.
+ */
+fun captionOf(labels: List<String>): String =
+    labels.distinct().take(MAX_THINGS).joinToString(", ")
+
+/** Past three or four, a list stops being a description. */
+private const val MAX_THINGS = 4

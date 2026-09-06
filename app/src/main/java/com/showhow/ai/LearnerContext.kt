@@ -82,10 +82,17 @@ fun learnerContext(
     question: String,
     seenNow: List<String> = emptyList(),
     toolWords: List<String> = emptyList(),
+    detectable: Set<String> = emptySet(),
 ): LearnerContext {
     val i = stepIndex.coerceIn(0, (guide.steps.size - 1).coerceAtLeast(0))
     val step = guide.steps.getOrNull(i)
-    val objects = step?.caption.orEmpty().split(",").map { it.trim() }.filter { it.isNotBlank() }
+    // Captions outlive the detector that wrote them. A label no model on this
+    // phone can produce is not an observation any more, and passing it on as
+    // one has the coach telling a learner the photo shows a book. Empty means
+    // the question could not be answered, and then nothing is dropped.
+    val objects = step?.caption.orEmpty().split(",")
+        .map { it.trim() }
+        .filter { it.isNotBlank() && (detectable.isEmpty() || it.lowercase() in detectable) }
     // Tools come from what the expert said and wrote, never from the detector:
     // the loaded model knows COCO classes and has no label for a screwdriver.
     val guideText = listOf(step?.instruction, step?.transcript).joinToString(" ") { it.orEmpty() }

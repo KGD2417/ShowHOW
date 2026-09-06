@@ -319,11 +319,25 @@ data class Policy(
      */
     val checkSettledMaxChange: Int = 14,
     /** At or above this similarity the scene matches the step's photograph. */
-    val checkCorrectSimilarity: Float = 0.72f,
+    val checkCorrectSimilarity: Float = 0.70f,
     /** ...and above this it is worth mentioning, not worth insisting on. */
     val checkLikelySimilarity: Float = 0.55f,
-    /** Fraction of the photograph's labels that must be in frame now. */
-    val checkLabelOverlap: Double = 0.5,
+    /**
+     * How much of the photograph's object evidence must be in front of the
+     * camera before the step counts as done.
+     *
+     * The one number that decides a page turn now, because it is the only one
+     * that is about the *work* rather than about the room. The scene
+     * comparison it replaced measures structure and colour over the whole
+     * frame, so it demanded the learner's bench look like the expert's -- same
+     * desk, same light, same angle -- and no amount of doing the job correctly
+     * on a different table could satisfy it.
+     *
+     * 0.75 and not 0.5: counted rather than merely named (see [labelOverlap]),
+     * half the evidence is a panel with one of its two screws out, and that is
+     * a step in progress rather than a step finished.
+     */
+    val checkLabelOverlap: Double = 0.75,
 
     // --- Coach (the on-device model that rewrites steps and answers questions) ---
     /**
@@ -375,13 +389,21 @@ data class Policy(
      * How closely the camera must match the step's photograph before the guide
      * moves on by itself. 0 turns it off and waits for a person.
      *
-     * 0.60 rather than something stricter because this is not a correctness
-     * check -- [checkCorrectSimilarity] is, at 0.72, and it is the one allowed
-     * to tell a learner they got it right. This only decides when to turn the
-     * page, and turning it a little early costs a tap of the Back button while
-     * never turning it strands someone holding a screwdriver.
+     * 0.70, and deliberately the same number as [checkCorrectSimilarity]. Two
+     * thresholds on one measurement is how the app came to be asked for 70%
+     * and to behave like 72%: [mayAdvance] has to clear both, so the higher
+     * one silently was the setting and the other was decoration. Equal, this
+     * one is the on/off switch (0 waits for a person) and the room to demand
+     * *more* of a page turn than of a line of advice, which is a thing someone
+     * may want and is not a thing that happens by accident.
+     * The old 0.60 was set on the theory that turning early costs a tap
+     * of Back while never turning strands someone holding a screwdriver -- and
+     * on the bench it turned on a desk that merely looked like the desk, with
+     * the learner's hand not even in shot, which reads as the app claiming
+     * they finished work they had not started. Early is not cheap when it is
+     * wrong out loud.
      */
-    val advanceOnMatchSimilarity: Float = 0.60f,
+    val advanceOnMatchSimilarity: Float = 0.70f,
 
     /**
      * How long the match has to hold before the page turns.

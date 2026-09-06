@@ -3,6 +3,7 @@ package com.showhow.ui
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.util.Log
 import androidx.camera.core.ImageAnalysis
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,6 +11,7 @@ import com.showhow.ai.AiStack
 import com.showhow.ai.DETECTOR_MODEL
 import com.showhow.ai.DETECTOR_MODEL_COCO
 import com.showhow.ai.DetectorModel
+import com.showhow.ai.DetectionBox
 import com.showhow.ai.Detections
 import com.showhow.ai.TakeStep
 import com.showhow.ai.AnswerEvidence
@@ -19,6 +21,7 @@ import com.showhow.ai.Localization
 import com.showhow.ai.learnerContext
 import com.showhow.ai.DeviceAsr
 import com.showhow.ai.DetectorCaptioner
+import com.showhow.ai.captionOf
 import com.showhow.ai.GESTURE_MODEL
 import com.showhow.ai.Gesture
 import com.showhow.ai.DeviceNarrator
@@ -40,6 +43,8 @@ import com.showhow.core.ModeInputs
 import com.showhow.core.CheckInputs
 import com.showhow.core.StepCheck
 import com.showhow.core.checkStep
+import com.showhow.core.labelShortfall
+import com.showhow.core.mayAdvance
 import com.showhow.core.correctDomainText
 import com.showhow.core.correctDomainTokens
 import com.showhow.core.correctionEvidence
@@ -241,9 +246,13 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Nothing in here is canned any more. Gemma would only make it prettier. */
+    /** Concrete, because the VM needs [DetectorCaptioner.labels] and not only
+     * the one-line caption the [Captioner] interface promises. */
+    private val captioner = DetectorCaptioner(detector)
+
     val ai: AiStack = AiStack(
         asr = deviceAsr ?: voskAsr,
-        captioner = DetectorCaptioner(detector),
+        captioner = captioner,
         sceneCheck = RealSceneCheck(),
     )
 
@@ -266,11 +275,29 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     val detections: StateFlow<Detections> = _detections.asStateFlow()
 
     /**
-     * When the detector last saw anything, so a frame it happens to miss does
-     * not blink every box off and straight back on. A borderline score at ten
-     * frames a second reads as a fault in the app rather than what it is.
+     * When each label was last actually detected, and the boxes it had then.
+     *
+     * Per label, and that is the whole point. The old version held the *frame*:
+     * any frame with a box in it replaced everything, so a rock-solid `laptop`
+     * beside a flickering `screwdriver` gave the screwdriver no hold at all --
+     * it vanished the first frame the laptop came back alone. On the bench that
+     * is the tool sitting in plain sight while the app says it cannot see it.
+     *
+     * A label survives [DETECTION_HOLD_MS] past the last frame it was found in,
+     * with the boxes from that frame, so two screws stay two boxes.
      */
-    private var lastSeenAtMs = 0L
+    private val heldBoxes = LinkedHashMap<String, HeldLabel>()
+
+    private data class HeldLabel(val atMs: Long, val boxes: List<DetectionBox>)
+
+    /** This frame's detections, plus labels still inside their hold. */
+    private fun hold(seen: Detections, now: Long): Detections {
+        seen.boxes.groupBy { it.label }.forEach { (label, boxes) ->
+            heldBoxes[label] = HeldLabel(now, boxes)
+        }
+        heldBoxes.entries.removeAll { now - it.value.atMs > DETECTION_HOLD_MS }
+        return seen.copy(boxes = heldBoxes.values.flatMap { it.boxes })
+    }
 
     /** When the last frame was actually run through the models. */
     private var lastFrameAtMs = 0L
@@ -302,6 +329,25 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _stepCheck = MutableStateFlow(StepCheck.UNCERTAIN)
     val stepCheck: StateFlow<StepCheck> = _stepCheck.asStateFlow()
+
+    /**
+     * Whether the guide may turn its own page this instant. See [mayAdvance].
+     *
+     * A flow rather than a condition the Player assembles from two others,
+     * because it was assembled from two others and they were read at different
+     * moments off different frames -- which is how the bar came to say "that
+     * looks right" over a guide that would not move.
+     */
+    private val _mayAdvance = MutableStateFlow(false)
+    val mayAdvance: StateFlow<Boolean> = _mayAdvance.asStateFlow()
+
+    /**
+     * Labels the step's photograph had that the camera is not showing, so the
+     * Player can say what it is still waiting for instead of a bare percentage
+     * the learner cannot act on.
+     */
+    private val _missingLabels = MutableStateFlow<List<String>>(emptyList())
+    val missingLabels: StateFlow<List<String>> = _missingLabels.asStateFlow()
 
     /** dHash of the previous analysed frame, for "has the scene settled". */
     private var lastFrameHash: Long? = null
@@ -366,6 +412,78 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { f.copy(f.config ?: Bitmap.Config.ARGB_8888, false) }.getOrNull()
     }
 
+    /**
+     * The step's own photograph, decoded small, for the coach to look at.
+     *
+     * Its own decode rather than [sceneReference]: that one is owned by the
+     * camera analyzer and recycled the moment the learner changes step, and
+     * handing a recycled bitmap to a native graph is a crash rather than a
+     * worse answer. Sampled at 8 like everywhere else -- the vision encoder
+     * resizes it far smaller than that anyway.
+     */
+    private fun guidePhoto(g: Guide, stepIndex: Int): Bitmap? {
+        val photo = g.steps.getOrNull(stepIndex)?.photo.orEmpty()
+        val file = guides.goalImage(g.id, photo) ?: return null
+        return runCatching { decodeUpright(file, 8) }.getOrNull()
+    }
+
+    /**
+     * Re-read this guide's photographs with the detector that is on the phone
+     * now, and write what it actually sees back into the guide.
+     *
+     * The captions are a record of what *a* detector saw, and this app has
+     * changed which one it runs. A guide recorded against COCO's full class
+     * list has steps captioned `person, book`; the narrowed allowlist plus the
+     * fine-tuned tool model can never say either word again, so every step
+     * check on that guide fails a comparison against a model that no longer
+     * exists -- and the screen says "still looking for person, book" over a
+     * bench that is exactly right.
+     *
+     * Filtering the dead labels out (see [watchScene]) stops the false
+     * complaint but leaves the photographs under-described: step one shows a
+     * screwdriver the current model would find and the old one had no word
+     * for. So the photographs are read again rather than edited around.
+     *
+     * Once per guide, ever: it runs only when a caption contains something the
+     * detector cannot produce, which is exactly the definition of stale.
+     *
+     * @return true when anything changed, so the caller can reload.
+     */
+    suspend fun refreshCaptions(id: String): Boolean = withContext(Dispatchers.IO) {
+        val vocabulary = detector.vocabulary()
+        if (vocabulary.isEmpty()) return@withContext false
+        val guide = guides.loadForLearner(id) ?: return@withContext false
+
+        val stale = guide.steps.any { step ->
+            // A guide written before `objects` existed has counts nobody
+            // recorded, and re-reading the photograph is the only way to get
+            // them -- so a missing list is as stale as a retired label.
+            (step.caption.isNotBlank() && step.objects.isEmpty()) ||
+                step.caption.split(",")
+                    .map { it.trim().lowercase() }
+                    .any { it.isNotBlank() && it !in vocabulary }
+        }
+        if (!stale) return@withContext false
+
+        val byPhoto = guide.steps
+            .filter { it.photo.isNotBlank() }
+            .distinctBy { it.photo }
+            .mapNotNull { step ->
+                val file = guides.goalImage(id, step.photo) ?: return@mapNotNull null
+                step.photo to runCatching { captioner.labels(file) }.getOrDefault(emptyList())
+            }
+            .toMap()
+        if (byPhoto.isEmpty()) return@withContext false
+
+        guides.recaption(id, byPhoto)
+        Log.i(
+            TAG,
+            "recaptioned ${byPhoto.size} photos: " +
+                byPhoto.values.joinToString(" | ") { it.joinToString(",") },
+        )
+        true
+    }
+
     /** Detector labels from the photograph of the step being watched. */
     @Volatile
     private var expectedLabels: List<String> = emptyList()
@@ -410,9 +528,21 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * when the step changes, and with null when it leaves.
      */
     fun watchScene(photo: File?, expected: List<String> = emptyList()) {
-        expectedLabels = expected
+        // Only labels this phone's detector could actually report. A guide
+        // recorded against a wider allowlist still carries `person` and `book`
+        // in its captions, and nothing loaded here will ever produce one --
+        // so counting them as "not seen" turns a retired model into a
+        // permanent complaint about the learner's bench. [refreshCaptions]
+        // repairs the guide properly; this is the guard for the case it
+        // cannot, such as a step whose photograph has been deleted.
+        expectedLabels = detector.vocabulary()
+            .takeIf { it.isNotEmpty() }
+            ?.let { vocab -> expected.filter { it.trim().lowercase() in vocab } }
+            ?: expected
         lastFrameHash = null
         _stepCheck.value = StepCheck.UNCERTAIN
+        _mayAdvance.value = false
+        _missingLabels.value = expected
         sceneReference?.recycle()
         // A guide photo is a full-resolution JPEG and SceneHash only ever
         // looks at 32x32 of it, so decode it small and keep it small.
@@ -449,19 +579,20 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                     // scene check, which was comparing a sideways camera frame
                     // against an upright photo and calling a correct bench wrong.
                     hands?.onFrame(frame, 0)
-                    val seen = detector.onFrame(frame, 0)
-                    if (seen.boxes.isNotEmpty()) {
-                        lastSeenAtMs = now
-                        _detections.value = seen
-                    } else if (now - lastSeenAtMs > DETECTION_HOLD_MS) {
-                        _detections.value = seen
-                    }
+                    // One list, drawn and judged. Held per label -- see [hold]
+                    // -- and then used for both, because a box on screen that
+                    // the check cannot see is the app arguing with itself in
+                    // front of the person holding the phone.
+                    val seen = hold(detector.onFrame(frame, 0), now)
+                    _detections.value = seen
                     reference?.let {
                         _sceneSimilarity.value =
                             runCatching { ai.sceneCheck.compare(frame, it) }.getOrDefault(0f)
                     }
                     // The cascade, on the frame that is already decoded and
                     // already upright. Arithmetic only; no model is woken.
+                    // Repeats intact: two boxes labelled philips_screw is two
+                    // screws, and that is the difference the check turns on.
                     updateStepCheck(frame, seen.boxes.map { b -> b.label })
                     // And a copy for the coach, in case the learner asks about
                     // what is in front of them.
@@ -489,17 +620,19 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         val hash = runCatching { RealSceneCheck.hashOf(frame) }.getOrNull() ?: return
         val changed = lastFrameHash?.let { com.showhow.core.SceneHash.hamming(hash, it) }
         lastFrameHash = hash
-        _stepCheck.value = checkStep(
-            CheckInputs(
-                sceneSimilarity = _sceneSimilarity.value,
-                // No previous frame yet: treat it as settled rather than as a
-                // huge change, or the first frame after every step is wasted.
-                frameToFrameChange = changed ?: 0,
-                expected = expectedLabels,
-                seen = seen,
-            ),
-            policy.value,
+        val inputs = CheckInputs(
+            sceneSimilarity = _sceneSimilarity.value,
+            // No previous frame yet: treat it as settled rather than as a
+            // huge change, or the first frame after every step is wasted.
+            frameToFrameChange = changed ?: 0,
+            expected = expectedLabels,
+            seen = seen,
         )
+        _stepCheck.value = checkStep(inputs, policy.value)
+        // Same inputs, same instant, one decision -- so the bar and the page
+        // turn can never disagree about what the camera is showing.
+        _mayAdvance.value = mayAdvance(inputs, policy.value)
+        _missingLabels.value = labelShortfall(expectedLabels, seen)
     }
 
     private val _screen = MutableStateFlow<Screen>(Screen.Library)
@@ -859,10 +992,15 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             val photo = snaps[r.index].takeIf { it >= 0 }
                 ?.let { guides.snapFile(id, it) }
                 ?.takeIf { it.exists() }
+            // One detector pass, kept twice: the line a person reads and the
+            // list with its repeats intact, which is what the step check needs
+            // to tell one screw out from two.
+            val found = photo?.let { captioner.labels(it) }.orEmpty()
             Step(
                 index = r.index,
                 title = "Step ${r.index + 1}",
-                caption = photo?.let { ai.captioner.caption(it) }.orEmpty(),
+                caption = captionOf(found),
+                objects = found,
                 startMs = r.startMs,
                 endMs = r.endMs,
                 photo = photo?.name.orEmpty(),
@@ -1366,6 +1504,11 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 // furniture. Empty when the camera is off.
                 seenNow = _detections.value.boxes.map { it.label },
                 toolWords = policy.value.toolWords,
+                // Same filter as the step check. Telling the model "the
+                // detector saw a book in this step's photo" is a false claim
+                // about a photograph, and it is the sort of false claim that
+                // comes back out of a 2B model as advice.
+                detectable = detector.vocabulary(),
             )
             // With the camera on, the coach is handed a private copy of the
             // frame and can answer about the thing in the learner's hand --
@@ -1374,12 +1517,19 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             // is what lets the coach say which one, and answer a question no
             // label list anticipated.
             val frame = frameForCoach()
+            // And the expert's own picture of this step beside it, so the
+            // question the learner actually asked -- "is this the thing in the
+            // guide?" -- is one the model can answer by looking rather than by
+            // reading a label list. Null when the step has no photograph, and
+            // then the coach describes the bench instead of comparing it.
+            val goal = guidePhoto(g, stepIndex)
             val (evidence, text) = try {
-                if (frame != null) coach.see(context, frame) else coach.answer(context)
+                if (frame != null) coach.see(context, frame, goal) else coach.answer(context)
             } finally {
-                // Ours alone, so freeing it here cannot pull the pixels out
+                // Ours alone, so freeing them here cannot pull the pixels out
                 // from under anything else.
                 runCatching { frame?.recycle() }
+                runCatching { goal?.recycle() }
             }
             if (text.isBlank()) {
                 // No model, or it failed. Say so rather than showing an empty
@@ -1414,6 +1564,12 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setListenLang(code: String) {
         if (_listenLang.value == code) return
+        // The old language's prefetch is now work nobody wants, and it holds
+        // the model's one lock -- leaving it running is what makes the switch
+        // feel slow, because the first sentence in the new language queues
+        // behind however much of the guide was still being rendered.
+        prefetchJob?.cancel()
+        prefetchJob = null
         _listenLang.value = code
         narrator.stop()
     }
@@ -1426,25 +1582,38 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * into. Falling back to the original is always safe: it is the real step,
      * just not in their language. Returning nothing would be a silent guide.
      *
-     * Cached into guide.json on the first pass, so the wait is once per step.
-     *
-     * ponytail: translates the step being read, not the one after it. If the
-     * pause between steps is annoying, prefetch index + 1 here.
+     * Cached into guide.json on the first pass, so the wait is once per step
+     * per language, ever -- and [prefetchFrom] moves most of those waits off
+     * the moment a learner is standing there listening.
      */
     suspend fun spokenIn(g: Guide, stepIndex: Int, text: String): String {
         val want = _listenLang.value
         val step = g.steps.getOrNull(stepIndex) ?: return text
         if (want.isBlank() || want == g.lang || text.isBlank()) return text
-        step.translated[want]?.takeIf { it.isNotBlank() }?.let { return it }
+
+        step.translated[want]?.takeIf { it.isNotBlank() }?.let {
+            prefetchFrom(g, stepIndex + 1, want)
+            return it
+        }
         if (!coach.present) return text
 
         _translating.value = true
         val out = try {
-            runCatching { coach.translate(text, want) }.getOrDefault("")
+            translateInto(g, step, text, want)
         } finally {
             _translating.value = false
         }
-        if (out.isBlank()) return text
+        prefetchFrom(g, stepIndex + 1, want)
+        return out.ifBlank { text }
+    }
+
+    /**
+     * Render one step into [want] and write it back to the guide. "" on any
+     * failure, which the caller reads as "show the original".
+     */
+    private suspend fun translateInto(g: Guide, step: Step, text: String, want: String): String {
+        val out = runCatching { coach.translate(text, want) }.getOrDefault("")
+        if (out.isBlank()) return ""
 
         // Cache it, so this step is instant from now on. A write that fails is
         // a slower guide, not a broken one.
@@ -1465,6 +1634,46 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             guides.save(updated)
         }
         return out
+    }
+
+    private var prefetchJob: Job? = null
+
+    /**
+     * Translate the rest of the guide while the learner is still listening to
+     * this step.
+     *
+     * The whole complaint about switching language was the wait, and the wait
+     * is a 2B model rendering one sentence -- seconds, once per step, always
+     * at the exact moment somebody is standing there holding a screwdriver
+     * waiting to be told what to do. Every one of those seconds is available
+     * for free while the previous step is being read aloud.
+     *
+     * One job, in order, behind the coach's own lock, and abandoned the moment
+     * the learner picks a different language. It never speaks and never
+     * touches [translating]: a background job that lit up "Putting it into
+     * Hindi" would be reporting on work nobody is waiting for.
+     */
+    private fun prefetchFrom(g: Guide, from: Int, want: String) {
+        if (prefetchJob?.isActive == true) return
+        if (from > g.steps.lastIndex || !coach.present) return
+        // Off the main thread: this reads and rewrites guide.json once per
+        // step, and the learner is watching an animation while it happens.
+        prefetchJob = viewModelScope.launch(Dispatchers.IO) {
+            for (i in from..g.steps.lastIndex) {
+                // Re-read each time: the foreground translation of the step
+                // being read writes into the same file, and prefetching on a
+                // stale snapshot would overwrite it.
+                val fresh = guides.load(g.id) ?: return@launch
+                if (_listenLang.value != want) return@launch
+                val s = fresh.steps.getOrNull(i) ?: return@launch
+                if (!s.translated[want].isNullOrBlank()) continue
+                val text = s.instruction
+                    .ifBlank { s.transcript }
+                    .ifBlank { s.caption }
+                    .ifBlank { s.title }
+                if (text.isNotBlank()) translateInto(fresh, s, text, want)
+            }
+        }
     }
 
     fun clearCoachAnswer() {

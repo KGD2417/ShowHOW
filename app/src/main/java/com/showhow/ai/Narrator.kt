@@ -7,6 +7,7 @@ import android.speech.tts.Voice
 import android.util.Log
 import java.util.Locale
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
@@ -42,6 +43,44 @@ class DeviceNarrator(context: Context) : Narrator {
         if (!ready) Log.w(TAG, "no text-to-speech engine on this phone")
     }
 
+    /**
+     * The utterance the listener is waiting on, and whoever is waiting.
+     *
+     * One shared [TextToSpeech] means one shared progress listener, so a
+     * second [speak] used to replace the first's listener and QUEUE_FLUSH its
+     * audio -- and the first call then never returned, because nothing was
+     * left to resume it. The auto-advance awaits [speak] before turning the
+     * page, so that hang was a guide that stopped moving. A superseded caller
+     * is released here instead: its audio is gone, so it is finished.
+     */
+    private val lock = Any()
+    private var speaking: String? = null
+    private var waiting: CancellableContinuation<Unit>? = null
+
+    init {
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = Unit
+
+            override fun onDone(utteranceId: String?) = release(utteranceId)
+
+            @Deprecated("required by the base class", ReplaceWith(""))
+            override fun onError(utteranceId: String?) = release(utteranceId)
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                Log.w(TAG, "speak failed: $errorCode")
+                release(utteranceId)
+            }
+        })
+    }
+
+    /** Let go of whoever is waiting on [id], or on anything if null. */
+    private fun release(id: String?) = synchronized(lock) {
+        if (id != null && speaking != null && id != speaking) return@synchronized
+        waiting?.takeIf { it.isActive }?.resume(Unit)
+        waiting = null
+        speaking = null
+    }
+
     override suspend fun speak(text: String, lang: String) {
         if (!ready || text.isBlank()) return
         val locale = locale(lang)
@@ -56,35 +95,36 @@ class DeviceNarrator(context: Context) : Narrator {
         }
         tts.voice = voice
 
-        val id = "showhow-" + utterance++
         suspendCancellableCoroutine { cont ->
-            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
-
-                override fun onDone(utteranceId: String?) {
-                    if (utteranceId == id && cont.isActive) cont.resume(Unit)
-                }
-
-                @Deprecated("required by the base class", ReplaceWith(""))
-                override fun onError(utteranceId: String?) {
-                    if (utteranceId == id && cont.isActive) cont.resume(Unit)
-                }
-
-                override fun onError(utteranceId: String?, errorCode: Int) {
-                    Log.w(TAG, "speak failed: $errorCode")
-                    if (utteranceId == id && cont.isActive) cont.resume(Unit)
-                }
-            })
+            val id = synchronized(lock) {
+                // QUEUE_FLUSH below is about to delete whatever is playing, so
+                // whoever was awaiting it is done, one way or the other.
+                waiting?.takeIf { it.isActive }?.resume(Unit)
+                waiting = cont
+                speaking = "showhow-" + utterance++
+                speaking!!
+            }
 
             val queued = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
-            if (queued != TextToSpeech.SUCCESS && cont.isActive) cont.resume(Unit)
+            if (queued != TextToSpeech.SUCCESS) release(id)
 
-            cont.invokeOnCancellation { runCatching { tts.stop() } }
+            cont.invokeOnCancellation {
+                runCatching { tts.stop() }
+                synchronized(lock) {
+                    if (speaking == id) {
+                        waiting = null
+                        speaking = null
+                    }
+                }
+            }
         }
     }
 
     override fun stop() {
         runCatching { tts.stop() }
+        // stop() fires no callback for an utterance it kills, so the waiter is
+        // released here or it waits forever.
+        release(null)
     }
 
     override fun release() {

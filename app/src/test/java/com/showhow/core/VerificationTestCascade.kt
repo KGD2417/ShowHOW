@@ -1,6 +1,8 @@
 package com.showhow.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -52,17 +54,52 @@ class VerificationTestCascade {
     }
 
     @Test
-    fun `one signal without the other is LIKELY_CORRECT, never CORRECT`() {
-        // Right angle, part already removed.
+    fun `the right things on a bench that looks nothing like the photo is CORRECT`() {
+        // The whole point of the cascade's order. Everyone's desk, lighting and
+        // camera angle are different, and a check that demands the frame look
+        // like the expert's frame is a check nobody but the expert can pass.
+        // The objects are the claim about the work; they travel between benches.
+        assertEquals(
+            StepCheck.CORRECT,
+            checkStep(inputs(similarity = 0.05f, seen = listOf("laptop", "keyboard"))),
+        )
+    }
+
+    @Test
+    fun `a bench that looks right with the wrong things on it is not correct`() {
+        // The other half, and the reason the scene comparison cannot rescue
+        // anything: same desk, same light, same angle, work not done.
+        assertEquals(
+            StepCheck.UNCERTAIN,
+            checkStep(inputs(similarity = 0.95f, seen = listOf("person"))),
+        )
+    }
+
+    @Test
+    fun `half the evidence is a step in progress, not a step finished`() {
+        // One of the two expected things. Worth saying, not worth a page turn.
         assertEquals(
             StepCheck.LIKELY_CORRECT,
-            checkStep(inputs(similarity = 0.85f, seen = listOf("person"))),
+            checkStep(inputs(similarity = 0.85f, seen = listOf("laptop"))),
         )
-        // Right things in shot, different angle.
-        assertEquals(
-            StepCheck.LIKELY_CORRECT,
-            checkStep(inputs(similarity = 0.30f, seen = listOf("laptop", "keyboard"))),
-        )
+    }
+
+    @Test
+    fun `two screws out is not the same state as one screw out`() {
+        // Counted, not merely named. A set comparison called these identical,
+        // which is how a panel with one screw still in read as finished.
+        val twoOut = listOf("laptop", "philips_screw", "philips_screw")
+        val oneOut = listOf("laptop", "philips_screw")
+        // Two of the three boxes the photograph had, not all of them -- which a
+        // set comparison would have said, because both lists name the same two
+        // things.
+        assertEquals(2.0 / 3.0, labelOverlap(twoOut, oneOut)!!, 1e-9)
+        assertEquals(1.0, labelOverlap(twoOut, twoOut)!!, 1e-9)
+        assertEquals(listOf("philips_screw"), labelShortfall(twoOut, oneOut))
+        // And below the bar, so a panel with one screw still in does not read
+        // as a panel with both out.
+        assertEquals(StepCheck.LIKELY_CORRECT, checkStep(inputs(expected = twoOut, seen = oneOut)))
+        assertEquals(StepCheck.CORRECT, checkStep(inputs(expected = twoOut, seen = twoOut)))
     }
 
     @Test
@@ -142,11 +179,17 @@ class VerificationTestCascade {
 
     @Test
     fun `the thresholds are policy values, tunable without a rebuild`() {
-        val i = inputs(similarity = 0.60f, seen = listOf("person"))
-        assertEquals(StepCheck.LIKELY_CORRECT, checkStep(i, p))
+        // How much of the photograph's evidence has to be on the bench.
+        val half = inputs(similarity = 0.05f, seen = listOf("laptop"))
+        assertEquals(StepCheck.LIKELY_CORRECT, checkStep(half, p))
+        assertEquals(StepCheck.CORRECT, checkStep(half, p.copy(checkLabelOverlap = 0.5)))
+
+        // And the scene thresholds, on the path where the objects abstain.
+        val blind = inputs(similarity = 0.60f, expected = emptyList(), seen = emptyList())
+        assertEquals(StepCheck.LIKELY_CORRECT, checkStep(blind, p))
         assertEquals(
             StepCheck.UNCERTAIN,
-            checkStep(i, p.copy(checkLikelySimilarity = 0.9f, checkCorrectSimilarity = 0.95f)),
+            checkStep(blind, p.copy(checkLikelySimilarity = 0.9f, checkCorrectSimilarity = 0.95f)),
         )
     }
 
@@ -155,5 +198,56 @@ class VerificationTestCascade {
         val i = inputs(change = 10)
         assertEquals(StepCheck.CORRECT, checkStep(i, p))
         assertEquals(StepCheck.UNCERTAIN, checkStep(i, p.copy(checkSettledMaxChange = 4)))
+    }
+
+    // --- may the page turn by itself -------------------------------------
+
+    @Test
+    fun `the page turns when the scene and the labels both agree`() {
+        assertTrue(mayAdvance(inputs(similarity = 0.85f), p))
+    }
+
+    @Test
+    fun `a bench that merely looks similar does not turn the page`() {
+        // Same desk, same light, hand out of shot, nothing actually done.
+        // Well over the scene threshold on structure alone, and still no.
+        assertFalse(mayAdvance(inputs(similarity = 0.95f, seen = listOf("person")), p))
+    }
+
+    @Test
+    fun `still moving never turns the page, however well it matches`() {
+        assertFalse(mayAdvance(inputs(similarity = 0.99f, change = 40), p))
+    }
+
+    @Test
+    fun `the scene threshold does not hold back a bench whose objects agree`() {
+        // It used to, and that was the bug: a learner working correctly on
+        // their own desk sat at 58% forever. The objects agreeing is the
+        // claim, and it does not need the furniture to match.
+        assertTrue(mayAdvance(inputs(similarity = 0.05f), p))
+    }
+
+    @Test
+    fun `with nothing to compare objects against, the scene threshold is the bar`() {
+        val blind = inputs(expected = emptyList(), seen = emptyList())
+        assertFalse(mayAdvance(blind.copy(sceneSimilarity = 0.65f), p))
+        assertTrue(mayAdvance(blind.copy(sceneSimilarity = 0.71f), p))
+    }
+
+    @Test
+    fun `a phone with no detector is not stranded on step one forever`() {
+        // Nothing either side, so CORRECT is unreachable by design -- see the
+        // test above. The scene comparison has to be allowed to decide alone,
+        // or a guide built without a detector model can never move by itself.
+        assertTrue(
+            mayAdvance(inputs(similarity = 0.85f, expected = emptyList(), seen = emptyList()), p),
+        )
+        // But labels that exist and disagree still stop it.
+        assertFalse(mayAdvance(inputs(similarity = 0.85f, seen = listOf("bottle")), p))
+    }
+
+    @Test
+    fun `zero turns the whole behaviour off`() {
+        assertFalse(mayAdvance(inputs(similarity = 1f), p.copy(advanceOnMatchSimilarity = 0f)))
     }
 }

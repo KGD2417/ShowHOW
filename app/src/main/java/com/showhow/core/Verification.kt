@@ -78,24 +78,69 @@ fun checkStep(i: CheckInputs, p: Policy = Policy.DEFAULT): StepCheck {
     // compare against. Not a disagreement -- an absence.
     if (i.sceneSimilarity <= 0f && i.seen.isEmpty()) return StepCheck.UNCERTAIN
 
-    // 2. Structure and colour against the step's photograph.
+    // 2. What the detector found, against what it found in the photograph,
+    //    counted. This is the rung that decides, and it is first now.
+    val overlap = labelOverlap(i.expected, i.seen)
+
+    // 3. Structure and colour against the step's photograph. Corroboration
+    //    only -- see the note below on why it cannot decide anything.
     val looksRight = i.sceneSimilarity >= p.checkCorrectSimilarity
     val looksPlausible = i.sceneSimilarity >= p.checkLikelySimilarity
 
-    // 3. The detector's labels against its own labels for that photograph.
-    //    Abstains when either side is empty, rather than counting an absence
-    //    as a disagreement.
-    val overlap = labelOverlap(i.expected, i.seen)
-    val sameThings = overlap != null && overlap >= p.checkLabelOverlap
-
     return when {
-        looksRight && sameThings -> StepCheck.CORRECT
-        // Either signal alone is worth saying and not worth insisting on. A
-        // learner working at a different angle fails the first and passes the
-        // second; a learner at the right angle with the part already removed
-        // does the reverse.
-        looksRight || sameThings || looksPlausible -> StepCheck.LIKELY_CORRECT
+        // The objects agree. The work is in front of the camera, wherever the
+        // camera happens to be standing.
+        overlap != null && overlap >= p.checkLabelOverlap -> StepCheck.CORRECT
+        // Some of it is there. Worth saying, not worth turning a page on.
+        overlap != null && overlap > 0.0 -> StepCheck.LIKELY_CORRECT
+        // The objects say nothing at all -- no detector, or a photograph
+        // nothing was recognised in. The bench comparison is then the only
+        // signal there is, and one signal is never CORRECT.
+        overlap == null && looksRight -> StepCheck.LIKELY_CORRECT
+        overlap == null && looksPlausible -> StepCheck.LIKELY_CORRECT
+        // The objects are not there. A bench that still *looks* like the
+        // photograph while the parts are wrong is the case this must not call
+        // correct, so the scene comparison does not rescue it.
         else -> StepCheck.UNCERTAIN
+    }
+}
+
+/**
+ * May the guide turn its own page right now?
+ *
+ * One function and not a condition spelled out at the call site, because the
+ * screen and the page turn have to agree: a bar that says "that looks right"
+ * over a guide that then sits there is the app contradicting itself, and that
+ * is what a learner reads as broken.
+ *
+ * Two things have to hold. The scene has to reach
+ * [Policy.advanceOnMatchSimilarity] -- turning the page is a louder claim than
+ * a line of advice, so it gets its own, higher bar. And [checkStep] has to
+ * agree, with one exception spelled out below.
+ *
+ * The exception is the reason this is not simply `check == CORRECT`. CORRECT
+ * means two independent signals agreed, and on a phone with no detector model
+ * -- or on a step whose photograph nothing was recognised in -- the second
+ * signal does not exist and never will. Refusing to ever turn the page there
+ * would strand every learner on such a guide holding a screwdriver, so the
+ * scene comparison decides alone. Labels that *are* present and *disagree* are
+ * a different thing entirely, and still stop it.
+ */
+fun mayAdvance(i: CheckInputs, p: Policy = Policy.DEFAULT): Boolean {
+    // 0 turns the whole behaviour off and waits for a person.
+    if (p.advanceOnMatchSimilarity <= 0f) return false
+    return when (checkStep(i, p)) {
+        // The objects agreed. That is a claim about the work, and it holds on
+        // a bench this app has never seen.
+        StepCheck.CORRECT -> true
+        // Nothing to compare objects with. Then, and only then, the bench
+        // comparison decides alone, at its own higher bar -- otherwise a guide
+        // whose photographs the detector had no word for could never move by
+        // itself at all.
+        StepCheck.LIKELY_CORRECT ->
+            labelOverlap(i.expected, i.seen) == null &&
+                i.sceneSimilarity >= p.advanceOnMatchSimilarity
+        StepCheck.UNCERTAIN -> false
     }
 }
 
@@ -103,13 +148,41 @@ fun checkStep(i: CheckInputs, p: Policy = Policy.DEFAULT): StepCheck {
  * How much of what the photograph showed is in front of the camera now, 0..1,
  * or null when either side has nothing to say.
  *
+ * **Counted, not just named.** Two philips heads in the photograph and one on
+ * the bench is half the evidence, not all of it -- and "half" is the whole
+ * difference between a panel with its screws out and a panel with one screw
+ * out. A set comparison called those identical, which is how a step could be
+ * satisfied by a laptop merely being on the desk.
+ *
  * Null and not zero. An empty list means no detector, or nothing recognised,
  * and reporting that as "none of the expected things are here" would turn a
  * missing model into a warning about the learner's work.
  */
 internal fun labelOverlap(expected: List<String>, seen: List<String>): Double? {
-    val want = expected.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
-    val have = seen.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+    val want = counts(expected)
+    val have = counts(seen)
     if (want.isEmpty() || have.isEmpty()) return null
-    return want.count { it in have }.toDouble() / want.size
+    val matched = want.entries.sumOf { (label, n) -> minOf(n, have[label] ?: 0) }
+    return matched.toDouble() / want.values.sum()
 }
+
+/**
+ * What is still missing from the bench, one entry per box short, or empty.
+ *
+ * For telling the learner what to do rather than handing them a percentage.
+ * Same arithmetic as [labelOverlap]; a shortfall of two screws names the screw
+ * twice, because "still looking for 2 philips screws" is the useful sentence.
+ */
+fun labelShortfall(expected: List<String>, seen: List<String>): List<String> {
+    val want = counts(expected)
+    val have = counts(seen)
+    if (want.isEmpty()) return emptyList()
+    return want.flatMap { (label, n) -> List((n - (have[label] ?: 0)).coerceAtLeast(0)) { label } }
+}
+
+private fun counts(labels: List<String>): Map<String, Int> =
+    labels.map { it.trim().lowercase() }
+        .filter { it.isNotEmpty() }
+        .groupingBy { it }
+        .eachCount()
+

@@ -1,5 +1,6 @@
 package com.showhow.data
 
+import com.showhow.ai.captionOf
 import com.showhow.core.Policy
 import java.io.File
 
@@ -105,6 +106,38 @@ class GuideStore(private val root: File) {
 
     fun save(guide: Guide) {
         guideFile(guide.id).writeText(Policy.json.encodeToString(Guide.serializer(), guide))
+    }
+
+    /**
+     * Replace the detector's captions in every copy of this guide, keyed by
+     * photograph.
+     *
+     * Keyed by photo name and not by step index because that is the thing that
+     * cannot drift: which step owns which snap is decided once, at the end of
+     * the take, and the working copy and the verified copy may have been cut
+     * differently since.
+     *
+     * Both files, each read and written on its own, so re-captioning a
+     * verified guide cannot quietly overwrite a draft the expert is still
+     * editing -- or stamp a fresh verification on something nobody rechecked.
+     * A caption is the detector's own observation about a JPEG; it is not a
+     * claim the expert made, so refreshing it does not un-verify anything.
+     */
+    fun recaption(id: String, byPhoto: Map<String, List<String>>) {
+        for (file in listOf(guideFile(id), verifiedFile(id))) {
+            if (!file.isFile) continue
+            val guide = runCatching {
+                Policy.json.decodeFromString(Guide.serializer(), file.readText())
+            }.getOrNull() ?: continue
+            val patched = guide.copy(
+                steps = guide.steps.map { s ->
+                    byPhoto[s.photo]?.let { s.copy(caption = captionOf(it), objects = it) } ?: s
+                },
+            )
+            runCatching {
+                file.writeText(Policy.json.encodeToString(Guide.serializer(), patched))
+            }
+        }
     }
 
     /**

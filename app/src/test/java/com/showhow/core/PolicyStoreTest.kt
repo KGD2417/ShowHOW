@@ -36,8 +36,11 @@ class PolicyStoreTest {
             lang = "mr",
             createdAt = 1_700_000_000_000,
             steps = listOf(
-                Step(0, "Step 1", "Lid off", 0, 3000, "s1.jpg"),
-                Step(1, "Step 2", "Basket out", 3000, 7200, "s2.jpg", warning = "Water is hot"),
+                Step(0, "Step 1", "Lid off", startMs = 0, endMs = 3000, photo = "s1.jpg"),
+                Step(
+                    1, "Step 2", "Basket out",
+                    startMs = 3000, endMs = 7200, photo = "s2.jpg", warning = "Water is hot",
+                ),
             ),
         )
         val text = Policy.json.encodeToString(Guide.serializer(), guide)

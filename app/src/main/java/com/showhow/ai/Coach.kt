@@ -11,6 +11,8 @@ import com.showhow.data.Provenance
 import com.showhow.data.provenanceOf
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -120,6 +122,18 @@ class Coach(
 
     @Volatile
     private var llm: LlmInference? = null
+
+    /**
+     * One question of the model at a time.
+     *
+     * [LlmInference] is a single native graph and two `generateResponse` calls
+     * into it at once is undefined -- observed as one answer arriving with the
+     * other's sentences spliced into it, which is exactly the "it said that
+     * twice" a learner reports. The translation prefetch made overlap ordinary
+     * rather than rare, so it is serialised here, once, where every path goes
+     * through rather than in each caller.
+     */
+    private val oneAtATime = Mutex()
 
     @Volatile
     private var dead = false
@@ -340,31 +354,57 @@ class Coach(
      * refuses the modality. The learner gets a worse answer, never no answer,
      * and never a claim about a picture nothing looked at.
      */
-    suspend fun see(context: LearnerContext, frame: Bitmap): Pair<AnswerEvidence, String> =
+    suspend fun see(
+        context: LearnerContext,
+        frame: Bitmap,
+        guidePhoto: Bitmap? = null,
+    ): Pair<AnswerEvidence, String> =
         withContext(Dispatchers.IO) {
             val engine = engine() ?: return@withContext answer(context)
-            val prompt = visionPrompt(context)
+            val both = guidePhoto != null
 
             val out = runCatching {
-                LlmInferenceSession.createFromOptions(
-                    engine,
-                    LlmInferenceSession.LlmInferenceSessionOptions.builder()
-                        .setTopK(40)
-                        .setTemperature(0.3f)
-                        .setGraphOptions(
-                            GraphOptions.builder().setEnableVisionModality(true).build(),
+                oneAtATime.withLock {
+                    LlmInferenceSession.createFromOptions(
+                        engine,
+                        LlmInferenceSession.LlmInferenceSessionOptions.builder()
+                            .setTopK(40)
+                            .setTemperature(0.3f)
+                            .setGraphOptions(
+                                GraphOptions.builder().setEnableVisionModality(true).build(),
+                            )
+                            .build(),
+                    ).use { session ->
+                        val started = System.currentTimeMillis()
+                        // Chunks and images are appended in order, so the model
+                        // reads "here is the guide's photo" before the guide's
+                        // photo and "here is the camera now" before the camera.
+                        // Two unlabelled images would be two pictures it has no
+                        // way to tell apart, and an answer about the wrong one.
+                        session.addQueryChunk(visionPrompt(context, both))
+                        if (guidePhoto != null) {
+                            session.addQueryChunk(PHOTO_LEAD)
+                            session.addImage(BitmapImageBuilder(guidePhoto).build())
+                            session.addQueryChunk(LIVE_LEAD)
+                        }
+                        session.addImage(BitmapImageBuilder(frame).build())
+                        session.addQueryChunk(CLOSING)
+                        val text = session.generateResponse()
+                        Log.i(
+                            TAG,
+                            "saw ${if (both) 2 else 1} image(s) and answered in " +
+                                "${System.currentTimeMillis() - started} ms",
                         )
-                        .build(),
-                ).use { session ->
-                    val started = System.currentTimeMillis()
-                    session.addQueryChunk(prompt)
-                    session.addImage(BitmapImageBuilder(frame).build())
-                    val text = session.generateResponse()
-                    Log.i(TAG, "saw and answered in ${System.currentTimeMillis() - started} ms")
-                    text
+                        text
+                    }
                 }
             }.getOrElse {
                 Log.w(TAG, "vision unavailable, answering from text alone", it)
+                // A two-image session is the thing most likely to be refused --
+                // an older runtime, a graph built for one image. Drop to the
+                // single live frame before dropping to text: the learner asked
+                // about the thing in their hand and that picture is the answer.
+                if (both) return@withContext see(context, frame, null)
                 return@withContext answer(context)
             }
 
@@ -376,12 +416,18 @@ class Coach(
             evidence to text
         }
 
-    /** The learner's question, told plainly that a photograph is attached. */
-    private fun visionPrompt(c: LearnerContext): String =
+    /**
+     * The learner's question, told what pictures are coming and in what order.
+     *
+     * @param both true when the step's own photograph is attached ahead of the
+     *   live frame. The wording has to change with it: a model told to compare
+     *   two pictures when it was handed one will compare the frame to something
+     *   it invented, and say the two match.
+     */
+    private fun visionPrompt(c: LearnerContext, both: Boolean): String =
         """
         You are helping someone follow a repair guide on a phone, hands busy,
-        mid-job. A photograph of what their camera can see right now is
-        attached. Look at it before you answer.
+        mid-job. ${if (both) TWO_IMAGES else ONE_IMAGE}
 
         ${renderContext(c).take(maxContextChars())}
 
@@ -390,6 +436,7 @@ class Coach(
         kind of screwdriver tip, whether it matches the screw heads, where a
         component sits in the frame. Be concrete: "that is a Phillips and the
         base screws are Phillips too" is worth more than "it looks suitable".
+        ${if (both) COMPARE_RULE else ""}
 
         Begin with exactly one tag:
 
@@ -447,40 +494,13 @@ class Coach(
         // translated anything, and reading the English back in a Hindi voice is
         // worse than staying in English.
         if (out.equals(text, ignoreCase = true)) return ""
-        return dropRepeats(out)
-    }
-
-    /**
-     * Strip a sentence the model said twice in a row.
-     *
-     * A 2B model asked for one short sentence will sometimes give it, then give
-     * it again with "now" on the front -- observed on the bench as "सर्जिकल
-     * स्टेप पूरा हुआ। अब सर्जिकल स्टेप पूरा हुआ।". Spoken aloud that is a guide
-     * that stutters, and a learner cannot tell whether it means two things.
-     *
-     * Consecutive duplicates only, compared without the leading connective, so
-     * a step that legitimately repeats a word survives.
-     */
-    private fun dropRepeats(text: String): String {
-        val parts = text.split(SENTENCE_END).map { it.trim() }.filter { it.isNotBlank() }
-        if (parts.size < 2) return text
-        val kept = ArrayList<String>(parts.size)
-        for (part in parts) {
-            val bare = part.removePrefix("अब").removePrefix("Now").trim().lowercase()
-            val last = kept.lastOrNull()
-                ?.removePrefix("अब")?.removePrefix("Now")?.trim()?.lowercase()
-            if (bare.isNotEmpty() && bare == last) continue
-            kept += part
-        }
-        // Devanagari full stop, because the bulk of what this handles is Hindi
-        // and a Latin period there reads as a typo.
-        return kept.joinToString(SENTENCE_JOIN) + SENTENCE_JOIN.trim()
+        return dropSentenceRepeats(out)
     }
 
     private suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
         val engine = engine() ?: return@withContext ""
         val started = System.currentTimeMillis()
-        runCatching { engine.generateResponse(prompt) }
+        oneAtATime.withLock { runCatching { engine.generateResponse(prompt) } }
             .onSuccess { Log.i(TAG, "answered in ${System.currentTimeMillis() - started} ms") }
             .getOrElse {
                 // Not fatal and not retried: a prompt that overflows the
@@ -532,10 +552,12 @@ class Coach(
                 // when the reader has a screwdriver in one hand.
                 .setMaxTokens(4096)
                 // Declared at engine build time, not per session, so the graph
-                // reserves room for the vision encoder. One image: the learner
-                // is asking about what is in front of them right now, and a
-                // second frame would only cost tokens.
-                .setMaxNumImages(1)
+                // reserves room for the vision encoder. Two, because the
+                // question that matters is "does this match the guide?" and
+                // answering it means the model holding the expert's photograph
+                // and the learner's bench at the same time. One image can only
+                // ever be described; two can be compared.
+                .setMaxNumImages(2)
                 .setPreferredBackend(backend)
                 .build(),
         )
@@ -550,10 +572,38 @@ class Coach(
     }
 
     companion object {
-        /** Devanagari danda or a Latin full stop, either of which ends one. */
-        private val SENTENCE_END = Regex("[।.!?]+")
+        // --- what the vision prompt says about its pictures -----------------
 
-        private const val SENTENCE_JOIN = "। "
+        private const val ONE_IMAGE =
+            "A photograph of what their camera can see right now is attached. " +
+                "Look at it before you answer."
+
+        private const val TWO_IMAGES =
+            "Two photographs are attached, in this order: first the picture " +
+                "from the guide showing this step done correctly, then what " +
+                "the learner's camera can see right now. Look at both before " +
+                "you answer."
+
+        private const val PHOTO_LEAD =
+            "\n\nPHOTOGRAPH 1 -- the guide's own picture of this step, taken by " +
+                "the expert who did the job:\n"
+
+        private const val LIVE_LEAD =
+            "\n\nPHOTOGRAPH 2 -- what the learner's camera can see right now:\n"
+
+        private const val CLOSING = "\n\nNow answer."
+
+        private const val COMPARE_RULE =
+            """
+        Compare the two photographs and say plainly what is different between
+        them: a part still in place that the guide's picture shows removed, a
+        tool that is not the one in the expert's hand, a cable still connected.
+        Name the difference. If the two look the same in the way that matters
+        for this step, say so.
+        Photograph 1 was taken by the expert and photograph 2 is the learner's
+        bench -- never describe something from photograph 1 as though it were in
+        front of them now.
+            """
 
         /** What to call each language in a prompt. The keys are guide langs. */
         private val LANGUAGE_NAMES = mapOf(
@@ -811,3 +861,60 @@ internal fun clock(ms: Long): String {
     val total = (ms / 1000).coerceAtLeast(0)
     return "%d:%02d".format(total / 60, total % 60)
 }
+
+/**
+ * Strip a sentence the model said twice.
+ *
+ * A 2B model asked for one short sentence will sometimes give it, then give
+ * it again with "now" on the front -- observed on the bench as "सर्जिकल
+ * स्टेप पूरा हुआ। अब सर्जिकल स्टेप पूरा हुआ।". Spoken aloud that is a guide
+ * that stutters, and a learner cannot tell whether it means two things.
+ *
+ * Any duplicate and not only a consecutive one: the same model also
+ * produces "A. B. A." with the first sentence back on the end, which reads
+ * aloud as a guide that cannot decide it has finished. Compared without the
+ * leading connective and without case or spacing, so a step that
+ * legitimately repeats a *word* survives -- only a whole repeated sentence
+ * is dropped.
+ */
+internal fun dropSentenceRepeats(text: String): String {
+    val parts = text.split(SENTENCE_END).map { it.trim() }.filter { it.isNotBlank() }
+    if (parts.size < 2) return text
+    val seen = HashSet<String>(parts.size)
+    val kept = parts.filter { seen.add(bareSentence(it)) }
+    // Devanagari full stop where the text is Devanagari, a Latin one where
+    // it is not: this also translates into English, and "remove the screws।"
+    // reads as a typo rather than a sentence.
+    val join = if (DEVANAGARI.containsMatchIn(text)) SENTENCE_JOIN else ". "
+    return kept.joinToString(join) + join.trim()
+}
+
+/**
+ * One sentence stripped down to what makes it the same sentence twice.
+ *
+ * The connective a model puts on the front of its own echo ("अब", "फिर",
+ * "Now", "Then") is not part of what it is saying, and neither is case or
+ * spacing. Everything else is left alone.
+ */
+private fun bareSentence(part: String): String {
+    var out = part.trim()
+    for (lead in LEAD_WORDS) {
+        if (out.startsWith(lead, ignoreCase = true)) {
+            out = out.removeRange(0, lead.length).trim()
+            break
+        }
+    }
+    return out.replace(WHITESPACE, " ").lowercase()
+}
+
+private val LEAD_WORDS = listOf("इसके बाद", "अब", "फिर", "Now", "Then", "Next")
+
+private val WHITESPACE = Regex("""\s+""")
+
+/** Devanagari danda or a Latin full stop, either of which ends one. */
+private val SENTENCE_END = Regex("[।.!?]+")
+
+/** Any Devanagari letter, which decides which full stop to write. */
+private val DEVANAGARI = Regex("[\u0900-\u097F]")
+
+private const val SENTENCE_JOIN = "। "

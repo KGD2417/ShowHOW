@@ -175,6 +175,27 @@ class ObjectDetectSource(
         return Detections(boxes, w / h)
     }
 
+    /**
+     * Every label a model on this phone could return.
+     *
+     * For deciding whether a label written into a guide months ago is still
+     * something this app can look for. A guide recorded against a wider
+     * allowlist carries labels like `person` and `book`, and nothing here will
+     * ever produce one again -- so a step check comparing against them is
+     * comparing against a model that no longer exists, and reports the
+     * learner's correct bench as missing a book.
+     *
+     * Empty when the question cannot be answered -- no model file on the
+     * phone, or a model trusted for everything in its labels.txt rather than a
+     * named set. Empty means "do not filter on this", never "nothing can be
+     * detected". No model is loaded to answer it.
+     */
+    fun vocabulary(): Set<String> {
+        val present = models.filter { it.file.isFile }
+        if (present.isEmpty() || present.any { it.labels == null }) return emptySet()
+        return present.flatMap { it.labels.orEmpty() }.toSet()
+    }
+
     /** LOAD -> VERIFY -> INIT, once, each model down the delegate ladder. */
     private fun detectors(): List<Pair<ObjectDetector, DetectorModel>>? {
         loaded?.let { return it }

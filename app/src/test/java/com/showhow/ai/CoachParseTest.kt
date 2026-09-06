@@ -261,4 +261,37 @@ class CoachParseTest {
         assertEquals("12:30", clock(750_000))
         assertEquals("0:00", clock(-1))
     }
+
+    // --- a model saying it twice ------------------------------------------
+
+    @Test
+    fun `drops the sentence the model said again with a connective on it`() {
+        val out = dropSentenceRepeats("सर्जिकल स्टेप पूरा हुआ। अब सर्जिकल स्टेप पूरा हुआ।")
+        assertEquals("सर्जिकल स्टेप पूरा हुआ।", out)
+    }
+
+    @Test
+    fun `drops a repeat that is not the sentence right before it`() {
+        // The other habit: it finishes, adds a real second sentence, then puts
+        // the first one back on the end.
+        val out = dropSentenceRepeats("Remove the screws. Lift the panel. Remove the screws.")
+        assertEquals("Remove the screws. Lift the panel.", out)
+    }
+
+    @Test
+    fun `English keeps a full stop and not a danda`() {
+        val out = dropSentenceRepeats("Remove the screws. Remove the screws.")
+        assertEquals("Remove the screws.", out)
+    }
+
+    @Test
+    fun `a repeated word inside two different sentences is not a repeat`() {
+        val text = "Undo the screw. Keep the screw somewhere safe."
+        assertEquals(text, dropSentenceRepeats(text))
+    }
+
+    @Test
+    fun `one sentence is returned untouched`() {
+        assertEquals("Lift the panel off", dropSentenceRepeats("Lift the panel off"))
+    }
 }

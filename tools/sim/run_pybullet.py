@@ -37,11 +37,15 @@ GUI = True
 FRAMES = []                  # captured only when --gif was asked for
 RECORDING = False
 CAPTION = ""                 # the step line burnt into those frames
+TITLE = "ShowHow"            # top-left, the guide's own name
+STEP_OF = ""                 # top-right, "STEP 3 / 7"
 
 # Close on the laptop, not the room: the whole point of the shot is that a
-# judge can see four screws come out.
-VIEW = p.computeViewMatrix([0.95, -0.72, 1.15], [0.46, 0.02, 0.68], [0, 0, 1])
-PROJ = p.computeProjectionMatrixFOV(45, 4 / 3, 0.05, 3)
+# judge can see the screws come out.
+SHOT = (640, 480)
+VIEW = p.computeViewMatrix([0.92, -0.70, 1.12], [0.46, 0.02, 0.68], [0, 0, 1])
+PROJ = p.computeProjectionMatrixFOV(45, SHOT[0] / SHOT[1], 0.05, 3)
+LIGHT = [-0.6, -0.9, 1.4]
 
 
 # --- scene ----------------------------------------------------------------
@@ -128,7 +132,8 @@ def setup(gui=True):
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
     p.setGravity(0, 0, -9.8)
-    p.loadURDF("plane.urdf")
+    floor = p.loadURDF("plane.urdf")
+    p.changeVisualShape(floor, -1, rgbaColor=[0.90, 0.90, 0.93, 1])
     # The arm is bolted to the bench, like the ones in a repair shop. Standing
     # it on the floor beside the table puts the panda's own shoulder inside the
     # tabletop's collision box, and the IK solution is then unreachable in a way
@@ -161,21 +166,54 @@ def build_scene(objects, ops):
 
 # --- motion ---------------------------------------------------------------
 
-def snap():
-    """One offscreen frame with the step's own words across the bottom.
+def font(size):
+    from PIL import ImageFont
+    for name in ("segoeui.ttf", "arial.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
 
-    getCameraImage, not the GUI recorder: this has to produce something a judge
-    can watch on a laptop with no display attached and no ffmpeg installed.
+
+def snap():
+    """One offscreen frame, captioned with the step's own words.
+
+    getCameraImage and not the GUI recorder: this has to produce something a
+    judge can watch on a laptop with no display attached.
     """
     from PIL import Image, ImageDraw
-    w, h = 480, 360
-    px = p.getCameraImage(w, h, VIEW, PROJ, renderer=p.ER_TINY_RENDERER)[2]
+    w, h = SHOT
+    px = p.getCameraImage(w, h, VIEW, PROJ, shadow=1, lightDirection=LIGHT,
+                          renderer=p.ER_TINY_RENDERER)[2]
     img = Image.frombuffer("RGBA", (w, h), bytes(px), "raw", "RGBA", 0, 1).convert("RGB")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, w, 34], fill=(17, 19, 24))
+    d.text((14, 9), TITLE, font=font(15), fill=(232, 234, 238))
+    if STEP_OF:
+        big = font(15)
+        tw = d.textlength(STEP_OF, font=big)
+        d.text((w - tw - 14, 9), STEP_OF, font=big, fill=(255, 176, 46))
     if CAPTION:
-        d = ImageDraw.Draw(img)
-        d.rectangle([0, h - 22, w, h], fill=(0, 0, 0))
-        d.text((6, h - 16), CAPTION[:78], fill=(255, 255, 255))
+        d.rectangle([0, h - 40, w, h], fill=(17, 19, 24))
+        d.text((14, h - 29), CAPTION[:86], font=font(15), fill=(235, 237, 240))
     FRAMES.append(img)
+
+
+def write_mp4(path, frames, fps=20):
+    """Frames straight into the ffmpeg binary that ships with imageio-ffmpeg."""
+    import subprocess
+    import imageio_ffmpeg
+    w, h = frames[0].size
+    cmd = [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-f", "rawvideo",
+           "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", path]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for fr in frames:
+        proc.stdin.write(fr.tobytes())
+    proc.stdin.close()
+    proc.wait()
 
 
 def hold(steps=60, every=15):
@@ -355,25 +393,32 @@ def run_op(arm, op, laptop, spare):
 
 # --- entry points ---------------------------------------------------------
 
-def play(prog, gui=True, gif=None, limit=0):
-    global RECORDING, CAPTION
+def play(prog, gui=True, gif=None, limit=0, mp4=None):
+    global RECORDING, CAPTION, TITLE, STEP_OF
     arm = setup(gui=gui)
     laptop, spare = build_scene(prog["objects"], prog["ops"])
-    RECORDING = bool(gif)
+    RECORDING = bool(gif or mp4)
+    TITLE = prog.get("title", "ShowHow")
+    ops = prog["ops"][:limit] if limit else prog["ops"]
     hold(60)
-    for op in (prog["ops"][:limit] if limit else prog["ops"]):
-        CAPTION = f"{op['step'] + 1}. {op['op'].upper()} {op['target']} -- {op['say']}"
-        print(CAPTION)
+    for n, op in enumerate(ops, 1):
+        STEP_OF = f"{op['op'].upper()}   {n} / {len(ops)}"
+        CAPTION = f"{op['say']}"
+        print(f"{n}. {op['op'].upper():8} {op['target']:12} -- {op['say']}")
         tag = p.addUserDebugText(CAPTION, [0.05, -0.45, 1.15], [0, 0, 0], 1.0) if gui else None
         run_op(arm, op, laptop, spare)
         if tag is not None:
             p.removeUserDebugItem(tag)
-    CAPTION = ""
-    hold(600 if gui else 30)
+    CAPTION, STEP_OF = "", "DONE"
+    hold(600 if gui else 60)
     if gif and FRAMES:
-        FRAMES[0].save(gif, save_all=True, append_images=FRAMES[1:],
-                       duration=60, loop=0)
+        small = [f.resize((f.width // 2, f.height // 2)) for f in FRAMES]
+        small[0].save(gif, save_all=True, append_images=small[1:],
+                      duration=60, loop=0, optimize=True)
         print(f"{len(FRAMES)} frames -> {gif}")
+    if mp4 and FRAMES:
+        write_mp4(mp4, FRAMES)
+        print(f"{len(FRAMES)} frames -> {mp4}")
     return arm, laptop, spare
 
 
@@ -408,13 +453,14 @@ def main():
     ap.add_argument("program", nargs="?")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--gif", help="write an animated gif of the run")
+    ap.add_argument("--mp4", help="write an mp4 of the run")
     ap.add_argument("--ops", type=int, default=0, help="stop after N ops")
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
     if a.selfcheck:
         selfcheck(); return
     prog = json.load(open(a.program, encoding="utf-8"))
-    play(prog, gui=not a.headless, gif=a.gif, limit=a.ops)
+    play(prog, gui=not a.headless, gif=a.gif, limit=a.ops, mp4=a.mp4)
     p.disconnect()
 
 

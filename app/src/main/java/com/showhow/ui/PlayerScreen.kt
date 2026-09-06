@@ -87,16 +87,22 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     // The verified version when one exists, the working copy when it does not.
     // A learner must never be handed a half-finished edit of a guide an expert
     // has already checked.
-    val guide = remember(guideId) { vm.guides.loadForLearner(guideId) }
+    // Bumped when the detector re-reads the step photographs, so the screen
+    // picks up captions that were written by a model this phone no longer runs.
+    var recaptioned by remember(guideId) { mutableIntStateOf(0) }
+    val guide = remember(guideId, recaptioned) { vm.guides.loadForLearner(guideId) }
+    LaunchedEffect(guideId) { if (vm.refreshCaptions(guideId)) recaptioned++ }
     val mode by vm.mode.collectAsStateWithLifecycle()
     val reason by vm.reason.collectAsStateWithLifecycle()
     val similarity by vm.sceneSimilarity.collectAsStateWithLifecycle()
     val check by vm.stepCheck.collectAsStateWithLifecycle()
+    val missing by vm.missingLabels.collectAsStateWithLifecycle()
     val detections by vm.detections.collectAsStateWithLifecycle()
     val policy by vm.policy.collectAsStateWithLifecycle()
     val readAloud by vm.readAloud.collectAsStateWithLifecycle()
     val listenLang by vm.listenLang.collectAsStateWithLifecycle()
     val translating by vm.translating.collectAsStateWithLifecycle()
+    val mayAdvance by vm.mayAdvance.collectAsStateWithLifecycle()
 
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var index by remember { mutableIntStateOf(0) }
@@ -126,13 +132,19 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     // The scene check compares the live camera to this step's photo. Told here
     // rather than in the ViewModel because the Player is what knows which step
     // a person is actually looking at.
-    LaunchedEffect(step.photo, cameraOn) {
+    LaunchedEffect(step.photo, step.objects, step.caption, cameraOn) {
         // The step's own detector labels travel with the photograph, so the
         // cascade compares like with like: what the detector saw then against
         // what it sees now.
         vm.watchScene(
             if (cameraOn) goal else null,
-            step.caption.split(",").map { it.trim() }.filter { it.isNotBlank() },
+            // The counted list where the guide has one. Splitting the caption
+            // is the fallback for a guide written before it existed, and it
+            // loses the repeats -- so two screws read as one until
+            // refreshCaptions has been round.
+            step.objects.ifEmpty {
+                step.caption.split(",").map { it.trim() }.filter { it.isNotBlank() }
+            },
         )
     }
     DisposableEffect(Unit) { onDispose { vm.watchScene(null) } }
@@ -195,10 +207,17 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
             // Held is the learner saying "wait", and the ask sheet is them
             // mid-question. Neither is a moment to turn the page.
             if (!holding && !asking) {
-                val matched = vm.sceneSimilarity.value >= policy.advanceOnMatchSimilarity
+                // One decision, made in core off one frame's inputs. The
+                // similarity number alone used to do this, and it hits its
+                // threshold on a bench that is merely the same bench -- same
+                // desk, same lighting, hand out of shot, nothing actually
+                // done. mayAdvance wants the phone to have stopped moving,
+                // the frame to reach the stricter correctness threshold, and
+                // the detector's labels to agree where there are any to
+                // disagree with.
                 val fired = matchLatch.update(
                     android.os.SystemClock.elapsedRealtime(),
-                    if (matched) true else null,
+                    if (vm.mayAdvance.value) true else null,
                 )
                 if (fired != null && advancedOn != step.startMs) {
                     advancedOn = step.startMs
@@ -305,15 +324,27 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
             if (cameraOn) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    when (check) {
-                        StepCheck.CORRECT -> "That looks like the photo for this step"
-                        StepCheck.LIKELY_CORRECT ->
-                            "Close to the photo for this step (%.0f%%)".format(similarity * 100)
-                        // Says which kind of nothing, because "hold still" and
-                        // "this looks wrong" are different messages and only one
-                        // of them is true here.
-                        StepCheck.UNCERTAIN ->
+                    // The same percentage in every branch, because it is the
+                    // number being judged and a learner who only sees it on
+                    // one line reads the other lines as a different, hidden
+                    // measurement. And where the picture matches but the
+                    // detector is short of something, it says what -- "84%"
+                    // and no page turn is the app looking broken; "84%, still
+                    // looking for the screwdriver" is something to act on.
+                    when {
+                        check == StepCheck.UNCERTAIN ->
+                            // Says which kind of nothing, because "hold still"
+                            // and "this looks wrong" are different messages and
+                            // only one of them is true here.
                             "Can't tell yet - hold the phone steady on your work"
+                        check == StepCheck.CORRECT ->
+                            "That looks like the photo for this step (%.0f%%)"
+                                .format(similarity * 100)
+                        missing.isNotEmpty() && similarity >= policy.advanceOnMatchSimilarity ->
+                            "Looks like the photo (%.0f%%) - still looking for %s"
+                                .format(similarity * 100, missing.take(2).joinToString(", "))
+                        else ->
+                            "Close to the photo for this step (%.0f%%)".format(similarity * 100)
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = when (check) {
@@ -364,7 +395,10 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                         holding -> "Held"
                         translating -> "Putting it into ${LISTEN_NAMES[listenLang] ?: listenLang}"
                         advanceInMs > 0 -> "Next step in ${(advanceInMs / 1000) + 1}s"
-                        similarity >= policy.advanceOnMatchSimilarity -> "That looks right"
+                        // The same value the page turn reads, so the bar can
+                        // never say "that looks right" about a bench the app is
+                        // not willing to move on from.
+                        mayAdvance -> "That looks right"
 
                         readAloud -> "Reading it out"
                         else -> "Playing your recording"
@@ -410,6 +444,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                 vm = vm,
                 guide = guide,
                 stepNumber = index + 1,
+                cameraOn = cameraOn,
                 onGoTo = { i -> goTo(i); asking = false },
                 onDismiss = { asking = false },
             )
@@ -662,6 +697,8 @@ private fun AskSheet(
     vm: ShowHowViewModel,
     guide: Guide,
     stepNumber: Int,
+    /** Whether the coach will actually be handed a picture of the bench. */
+    cameraOn: Boolean,
     onGoTo: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -694,10 +731,20 @@ private fun AskSheet(
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                if (vm.coachPresent) {
-                    "Answered on this phone, from this guide. Nothing is sent anywhere."
-                } else {
-                    "Answers come from what you recorded. Nothing is sent anywhere."
+                // Says which of the two questions it can answer. With the
+                // camera on it is handed this step's photo and the live frame
+                // and can compare them; with it off it has the guide's words
+                // and nothing else, and promising more would be a lie the
+                // learner only finds out about in the answer.
+                when {
+                    !vm.coachPresent ->
+                        "Answers come from what you recorded. Nothing is sent anywhere."
+                    cameraOn ->
+                        "It looks at your camera and the guide's photo of this " +
+                            "step, on this phone. Nothing is sent anywhere."
+                    else ->
+                        "Answered from the guide's words on this phone. Turn the " +
+                            "camera on and it can look at what you are holding too."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = Ink.dim,

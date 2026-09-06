@@ -61,6 +61,19 @@ data class Step(
     val index: Int,
     val title: String = "",
     val caption: String = "",
+    /**
+     * Every box the detector found in [photo], one entry per box.
+     *
+     * [caption] is the same information deduplicated for a human to read, and
+     * this is the copy the step check does arithmetic on -- because two screw
+     * heads and one screw head are different states of the same job, and a
+     * distinct list calls them identical.
+     *
+     * Defaults to empty so a guide.json written before this field existed
+     * still loads; the Player then falls back to splitting [caption], and
+     * refreshCaptions fills this in the first time the guide is opened.
+     */
+    val objects: List<String> = emptyList(),
     val startMs: Long = 0,
     val endMs: Long = 0,
     /** File name inside the guide folder, e.g. "s1.jpg". */
