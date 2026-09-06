@@ -12,6 +12,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
 import java.io.File
+import java.util.Locale
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -228,11 +229,28 @@ class DeviceAsr(private val context: Context) : Asr {
             else -> "code $code"
         }
 
-        fun bcp47(lang: String): String = when {
-            lang.startsWith("mr") -> "mr-IN"
-            lang.startsWith("hi") -> "hi-IN"
-            else -> "en-IN"
+        /**
+         * The tag to ask the system engine for.
+         *
+         * The phone's own locale wins when it speaks the language being asked
+         * for, because that is the pack the phone has actually downloaded. This
+         * app asked for `en-IN` unconditionally and this bench phone is set to
+         * `en-US`: every take came back `LANGUAGE_UNAVAILABLE`, the engine was
+         * written off after two tries, and all English fell to Vosk without
+         * anything on screen saying so.
+         *
+         * `-IN` stays the fallback. It is the right guess for this room, and a
+         * phone set to something else still gets asked in its own tag first.
+         */
+        fun bcp47(lang: String, device: Locale = Locale.getDefault()): String {
+            val want = normalize(lang)
+            if (device.language.lowercase() == want && device.country.isNotBlank()) {
+                return "$want-${device.country.uppercase()}"
+            }
+            return "$want-IN"
         }
+
+        private fun normalize(lang: String): String = lang.take(2).lowercase()
 
         /**
          * Whether this phone can recognise speech without a network.

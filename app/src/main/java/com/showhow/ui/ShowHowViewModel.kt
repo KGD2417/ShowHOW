@@ -8,6 +8,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.showhow.ai.AiStack
 import com.showhow.ai.DETECTOR_MODEL
+import com.showhow.ai.DETECTOR_MODEL_COCO
+import com.showhow.ai.DetectorModel
 import com.showhow.ai.Detections
 import com.showhow.ai.TakeStep
 import com.showhow.ai.AnswerEvidence
@@ -111,10 +113,20 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         File(app.filesDir, GESTURE_MODEL),
     ) { policy.value }
 
+    // Both detectors, every frame. The fine-tuned one knows the tools and
+    // nothing else; COCO keeps the laptop, keyboard, mouse and person it threw
+    // away. Either file may be absent -- the other still runs.
     private val detector = ObjectDetectSource(
         app,
-        File(app.filesDir, DETECTOR_MODEL),
-        minScore = { policy.value.detectMinScore },
+        listOf(
+            DetectorModel(
+                File(app.filesDir, DETECTOR_MODEL),
+                labels = TOOL_LABELS,
+            ) { policy.value.detectMinScore },
+            DetectorModel(File(app.filesDir, DETECTOR_MODEL_COCO)) {
+                policy.value.detectMinScoreCoco
+            },
+        ),
     )
 
     /**
@@ -621,7 +633,8 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             "on-device recogniser" to (deviceAsr != null),
             "vosk languages" to VoskAsr.languagesPresent(File(dir, VoskAsr.MODELS_DIR)).isNotEmpty(),
             "gesture" to File(dir, GESTURE_MODEL).isFile,
-            "detector" to File(dir, DETECTOR_MODEL).isFile,
+            "detector (tools)" to File(dir, DETECTOR_MODEL).isFile,
+            "detector (coco)" to File(dir, DETECTOR_MODEL_COCO).isFile,
         )
     }
 
@@ -1584,6 +1597,24 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
         /** How long a box survives a frame the detector missed it in. */
         const val DETECTION_HOLD_MS = 500L
+
+        /**
+         * What the fine-tuned detector is believed for.
+         *
+         * Its `labels.txt` also lists laptop, person, hand, keyboard and mouse,
+         * picked up with the tool datasets and backed by a handful of images
+         * each. COCO runs beside it with tens of thousands per class, so those
+         * are COCO's to answer and this list is deliberately shorter than the
+         * model's own vocabulary. Grow it only when the model earns a class.
+         */
+        val TOOL_LABELS = setOf(
+            "screwdriver",
+            "philips_screw",
+            "pozidriv_screw",
+            "torx_screw",
+            "hex_screw",
+            "square_screw",
+        )
 
         /**
          * Ten frames a second through the vision models.

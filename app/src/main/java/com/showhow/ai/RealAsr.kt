@@ -147,7 +147,13 @@ class VoskAsr(private val modelsDir: File) : Asr, AutoCloseable {
                 dead += want
                 return null
             }
-            Log.i(TAG, "loaded vosk '$want' in ${System.currentTimeMillis() - started} ms")
+            // The directory by name, not just the language. Which of the two
+            // sizes is loaded is the difference between hearing "philips" and
+            // hearing "fill up", and for a while nothing on the phone said.
+            Log.i(
+                TAG,
+                "loaded vosk '$want' from ${dir.name} in ${System.currentTimeMillis() - started} ms",
+            )
             model = loaded
             loadedLang = want
             return loaded
@@ -226,9 +232,24 @@ class VoskAsr(private val modelsDir: File) : Asr, AutoCloseable {
 
         fun normalize(lang: String): String = lang.take(2).lowercase()
 
-        /** One directory per language: models/vosk-en, models/vosk-hi, models/vosk-mr. */
-        fun dirFor(modelsDir: File, lang: String): File =
-            File(modelsDir, "vosk-" + normalize(lang))
+        /**
+         * One directory per language: models/vosk-en, models/vosk-hi, models/vosk-mr.
+         *
+         * A `vosk-<lang>-big` beside it wins. Vosk ships two sizes of most
+         * languages and they are not close: the small English model is 40 MB
+         * and mishears a workshop, the large one is 1.8 GB unpacked and does
+         * not. Which one is on the phone is a push, not a build -- but nothing
+         * read the big directory, so 600 MB of better English sat unused next
+         * to the model actually doing the work.
+         *
+         * Suffix and not a policy knob because it is a fact about the disk, not
+         * a preference: if the better model is there, use it.
+         */
+        fun dirFor(modelsDir: File, lang: String): File {
+            val base = "vosk-" + normalize(lang)
+            val big = File(modelsDir, "$base-big")
+            return if (File(big, "conf/model.conf").isFile) big else File(modelsDir, base)
+        }
 
         /** A half-unpacked model directory loads and then segfaults, so check first. */
         fun verify(dir: File): Boolean {

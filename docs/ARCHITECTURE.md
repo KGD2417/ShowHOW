@@ -267,7 +267,8 @@ models/vosk-en/                 unzipped Vosk model, conf/model.conf must exist
 models/vosk-hi/                 one directory per language, never a shared one
 models/vosk-mr/                 a Vosk model speaks exactly one language
 models/gesture_recognizer.task  MediaPipe canned-gesture model
-models/object_detector.tflite   MediaPipe object detector (EfficientDet-Lite)
+models/object_detector.tflite   fine-tuned tool detector, see 12
+models/object_detector_coco.tflite  stock COCO, runs beside it, see 12
 models/coach.task               Gemma, for the step rewrite and the Q&A
 ```
 
@@ -288,7 +289,9 @@ Every model is optional at runtime and nothing is ever replaced by a fake:
 |---|---|
 | `vosk-<lang>/` | that language drops out of the picker; `NoopAsr` if all three are gone, so empty transcripts and the pause detector standing alone |
 | `gesture_recognizer.task` | `Gesture.NONE` forever, the Player's buttons still work |
-| `object_detector.tflite` | no boxes over the viewfinder, empty captions, transcript carries the step |
+| `object_detector.tflite` | no tool boxes; COCO still names the room |
+| `object_detector_coco.tflite` | no laptop, keyboard, mouse or person; the tools still box |
+| both detectors | no boxes over the viewfinder, empty captions, transcript carries the step |
 | `coach.task` | steps stay in the expert's own words, the ask sheet falls back to its token match over the transcripts |
 
 Swapping a detector is a file push, not a build — drop a different
@@ -317,10 +320,10 @@ python3 tools/train_detector.py          # -> ~/sd_out/screwdriver.tflite
 ```
 
 Model Maker rather than YOLO for one reason: it writes TFLite Model Metadata,
-and MediaPipe's ObjectDetector refuses a model without it. The export therefore
-drops straight over `files/models/object_detector.tflite` with **no app change
-at all** -- the only edit is `componentAliases` in policy.json, which is what
-`ai/ComponentLocator` reads to decide what it can be asked to point at.
+and MediaPipe's ObjectDetector refuses a model without it. The export drops
+straight over `files/models/object_detector.tflite`, and `componentAliases` in
+policy.json is what `ai/ComponentLocator` reads to decide what it may be asked
+to point at.
 
 Measured on the merged dataset, 30 epochs, one laptop RTX 3060:
 
@@ -339,6 +342,30 @@ RAM, SSD, heatsink and battery are **still empty** in `componentAliases`. No
 dataset covered them, so asking still answers "this detector has no label for
 that" rather than borrowing a box from whatever happened to be nearby.
 
-The COCO model it replaced is kept on the phone as
-`files/models/object_detector_coco.tflite`; copying it back over
-`object_detector.tflite` reverts everything.
+### Both models run, per frame
+
+It did not replace COCO in the end -- it runs beside it. Held over a real bench
+at `detectMinScore` 0.55 the fine-tuned model drew **nothing**; dropped to 0.02
+it drew four boxes, one of them `philips` over a cartoon sticker. It is a small
+model and a wide desk shot is exactly the case its AP small of 0.157 predicts it
+will miss. Meanwhile a laptop repair guide with no `laptop` in it is not much of
+a guide, and COCO was already sitting on the phone doing that job well.
+
+So `ObjectDetectSource` takes a list of models and concatenates their boxes:
+
+| model | answers for | floor |
+|---|---|---|
+| `object_detector.tflite` | `screwdriver` and the five screw heads | `detectMinScore` 0.30 |
+| `object_detector_coco.tflite` | laptop, keyboard, mouse, person, tv | `detectMinScoreCoco` 0.50 |
+
+Two floors because the models are not equally sure of themselves, and one
+allowlist because they overlap: the fine-tuned `labels.txt` also carries
+laptop, person, hand, keyboard and mouse, picked up along with the tool
+datasets and backed by a handful of images each. COCO has tens of thousands per
+class and wins those outright, so `TOOL_LABELS` in `ShowHowViewModel` holds the
+fine-tuned model to the six classes it was actually trained for. Without it one
+laptop gets two boxes and the weaker one sometimes wins.
+
+Cost is a second inference per frame -- about 36 ms of NPU rather than 18, which
+still fits inside the analyzer's 100 ms interval. Either file may be absent and
+the other carries on; both absent is the empty-list case above.

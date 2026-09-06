@@ -52,11 +52,24 @@ data class Policy(
 
     // --- Object detection (the boxes over the viewfinder) ---
     /**
-     * Below this score a box is not drawn. Every box on screen is a claim.
+     * Floor for the **fine-tuned tool detector**. Every box on screen is a claim.
      *
-     * 0.4 put four half-guesses on the glass at once and read as noise.
+     * Lower than [detectMinScoreCoco] because it is a smaller model: 875 images
+     * over six classes, and on the bench it calls a screwdriver it has found
+     * correctly around 0.3. At 0.55 it drew nothing at all; at 0.02 it boxed a
+     * sticker and called it a philips head. 0.30 is where the tools appear and
+     * the stickers do not.
      */
-    val detectMinScore: Float = 0.55f,
+    val detectMinScore: Float = 0.30f,
+
+    /**
+     * Floor for the **stock COCO detector** that runs beside it.
+     *
+     * Higher, because it can afford to be: laptop, keyboard, mouse and person
+     * come back at 0.7-plus on a lit bench, and anything it is only half sure
+     * of is a guess this app does not need.
+     */
+    val detectMinScoreCoco: Float = 0.50f,
 
     // --- Capture (how often the camera saves a frame while recording) ---
     /**

@@ -4,11 +4,9 @@
     "speechMarginDb": 9.0,
     "gateMinDb": -45.0,
     "gateMaxDb": -6.0,
-
     "pauseMs": 1200,
     "minUtteranceMs": 2500,
     "maxSteps": 12,
-
     "inHandEnterVar": 0.09,
     "inHandExitVar": 0.05,
     "roomLoudEnterDb": -26.0,
@@ -17,12 +15,10 @@
     "speechUnclearConfThreshold": 0.55,
     "speechUnclearWindowWords": 12,
     "userFarFaceHeightPx": 90.0,
-
-    "detectMinScore": 0.55,
-
+    "detectMinScore": 0.30,
+    "detectMinScoreCoco": 0.50,
     "snapIntervalMs": 2000,
     "maxSnaps": 90,
-
     "frameMinSharpness": 0.05,
     "frameMinLuma": 22.0,
     "frameMaxLuma": 242.0,
@@ -31,80 +27,190 @@
     "frameLatenessWeight": 0.3,
     "frameDetectionWeight": 0.2,
     "frameDetectionsForFullCredit": 3.0,
-
     "componentAliases": {
-        "laptop": ["laptop"],
-        "keyboard": ["keyboard"],
-        "mouse": ["mouse"],
-        "screen": ["tv", "laptop"],
-        "screwdriver": ["screwdriver"],
-        "screw": ["philips_screw", "pozidriv_screw", "torx_screw", "hex_screw", "square_screw"],
-        "philips": ["philips_screw"],
-        "pozidriv": ["pozidriv_screw"],
-        "torx": ["torx_screw"],
-        "hex": ["hex_screw"],
-        "square": ["square_screw"],
+        "laptop": [
+            "laptop"
+        ],
+        "keyboard": [
+            "keyboard"
+        ],
+        "mouse": [
+            "mouse"
+        ],
+        "screen": [
+            "tv",
+            "laptop"
+        ],
+        "screwdriver": [
+            "screwdriver"
+        ],
+        "screw": [
+            "philips_screw",
+            "pozidriv_screw",
+            "torx_screw",
+            "hex_screw",
+            "square_screw"
+        ],
+        "philips": [
+            "philips_screw"
+        ],
+        "pozidriv": [
+            "pozidriv_screw"
+        ],
+        "torx": [
+            "torx_screw"
+        ],
+        "hex": [
+            "hex_screw"
+        ],
+        "square": [
+            "square_screw"
+        ],
         "ram": [],
         "ssd": [],
         "heatsink": [],
-        "battery": []
+        "battery": [],
+        "person": [
+            "person"
+        ],
+        "hand": []
     },
-    "componentMinScore": 0.60,
-
+    "componentMinScore": 0.30,
     "checkSettledMaxChange": 14,
     "checkCorrectSimilarity": 0.72,
     "checkLikelySimilarity": 0.55,
     "checkLabelOverlap": 0.5,
-
     "toolWords": [
-        "screwdriver", "phillips", "ph0", "ph1", "torx", "spudger", "pry",
-        "tweezers", "pliers", "brush", "paste", "anti-static", "strap",
-        "\u092a\u0947\u091a\u0915\u0938", "\u0938\u094d\u0915\u094d\u0930\u0942\u0921\u094d\u0930\u093e\u0907\u0935\u0930", "\u091a\u093f\u092e\u091f\u0940"
+        "screwdriver",
+        "phillips",
+        "ph0",
+        "ph1",
+        "torx",
+        "spudger",
+        "pry",
+        "tweezers",
+        "pliers",
+        "brush",
+        "paste",
+        "anti-static",
+        "strap",
+        "पेचकस",
+        "स्क्रूड्राइवर",
+        "चिमटी"
     ],
-
     "coachContextChars": 4000,
-
     "autoAdvanceMs": 0,
-
     "sceneAdviseMinSimilarity": 0.55,
-
     "gestureDwellMs": 350,
     "gestureMinConfidence": 0.6,
-
     "confirmWindowMs": 2500,
     "confirmMinLinkWords": 1,
-
     "correctionMarkerWeight": 0.35,
-    "correctionRepeatWeight": 0.40,
-    "correctionHesitationWeight": 0.20,
-    "correctionProximityWeight": 0.20,
-    "correctionLinkWordPenalty": 0.50,
+    "correctionRepeatWeight": 0.4,
+    "correctionHesitationWeight": 0.2,
+    "correctionProximityWeight": 0.2,
+    "correctionLinkWordPenalty": 0.5,
     "correctionWindowMs": 4000,
     "correctionMinStrength": 0.55,
     "correctionMarkers": [
-        "\u0928\u0939\u0940\u0902", "\u0928\u0939\u0940", "\u0917\u0932\u0924", "\u0930\u0941\u0915\u094b", "\u0905\u0930\u0947", "\u092e\u093e\u092b", "\u0938\u0949\u0930\u0940", "\u091a\u0941\u0915\u0932\u0947", "\u0925\u093e\u0902\u092c\u093e",
-        "no", "nahi", "nahin", "galat", "ruko", "arre", "sorry", "oops",
-        "wait", "actually", "not this", "thamba", "chukle"
+        "नहीं",
+        "नही",
+        "गलत",
+        "रुको",
+        "अरे",
+        "माफ",
+        "सॉरी",
+        "चुकले",
+        "थांबा",
+        "no",
+        "nahi",
+        "nahin",
+        "galat",
+        "ruko",
+        "arre",
+        "sorry",
+        "oops",
+        "wait",
+        "actually",
+        "not this",
+        "thamba",
+        "chukle"
     ],
     "hesitationMarkers": [
-        "\u092e\u0924\u0932\u092c", "\u092f\u093e\u0928\u0940", "\u0935\u094b", "\u0915\u094d\u092f\u093e", "\u092e\u094d\u0939\u0923\u091c\u0947",
-        "uh", "um", "umm", "err", "hmm", "matlab", "yaani", "mhanje", "i mean"
+        "मतलब",
+        "यानी",
+        "वो",
+        "क्या",
+        "म्हणजे",
+        "uh",
+        "um",
+        "umm",
+        "err",
+        "hmm",
+        "matlab",
+        "yaani",
+        "mhanje",
+        "i mean"
     ],
-
     "linkWordsHi": [
-        "फिर", "अब", "उसके बाद", "तब", "आगे", "बाद में", "इसके बाद",
-        "और अब", "और फिर", "पहले", "सबसे पहले", "अंत में", "आखिर में",
-        "phir", "ab", "uske baad", "tab", "aage", "baad mein", "iske baad",
-        "pehle", "sabse pehle", "ant mein", "aakhir mein"
+        "फिर",
+        "अब",
+        "उसके बाद",
+        "तब",
+        "आगे",
+        "बाद में",
+        "इसके बाद",
+        "और अब",
+        "और फिर",
+        "पहले",
+        "सबसे पहले",
+        "अंत में",
+        "आखिर में",
+        "phir",
+        "ab",
+        "uske baad",
+        "tab",
+        "aage",
+        "baad mein",
+        "iske baad",
+        "pehle",
+        "sabse pehle",
+        "ant mein",
+        "aakhir mein"
     ],
     "linkWordsMr": [
-        "मग", "आता", "त्यानंतर", "नंतर", "पुढे", "यानंतर",
-        "आणि मग", "आणि आता", "पहिले", "शेवटी", "सर्वप्रथम",
-        "mag", "ata", "tyanantar", "nantar", "pudhe", "yanantar",
-        "pahile", "shevti", "sarvapratham"
+        "मग",
+        "आता",
+        "त्यानंतर",
+        "नंतर",
+        "पुढे",
+        "यानंतर",
+        "आणि मग",
+        "आणि आता",
+        "पहिले",
+        "शेवटी",
+        "सर्वप्रथम",
+        "mag",
+        "ata",
+        "tyanantar",
+        "nantar",
+        "pudhe",
+        "yanantar",
+        "pahile",
+        "shevti",
+        "sarvapratham"
     ],
     "linkWordsEn": [
-        "then", "next", "after that", "now", "first", "finally",
-        "once", "after", "lastly", "and then", "now then"
+        "then",
+        "next",
+        "after that",
+        "now",
+        "first",
+        "finally",
+        "once",
+        "after",
+        "lastly",
+        "and then",
+        "now then"
     ]
 }
