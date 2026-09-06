@@ -94,7 +94,10 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     LaunchedEffect(guideId) { if (vm.refreshCaptions(guideId)) recaptioned++ }
     val mode by vm.mode.collectAsStateWithLifecycle()
     val reason by vm.reason.collectAsStateWithLifecycle()
-    val similarity by vm.sceneSimilarity.collectAsStateWithLifecycle()
+    // The smoothed number the verdict is actually made on, not the raw scene
+    // similarity that used to be shown beside it. Two measurements on one line
+    // is how "84%" came to sit over "can't tell yet".
+    val similarity by vm.confidence.collectAsStateWithLifecycle()
     val check by vm.stepCheck.collectAsStateWithLifecycle()
     val missing by vm.missingLabels.collectAsStateWithLifecycle()
     val detections by vm.detections.collectAsStateWithLifecycle()
@@ -340,8 +343,8 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                         check == StepCheck.CORRECT ->
                             "That looks like the photo for this step (%.0f%%)"
                                 .format(similarity * 100)
-                        missing.isNotEmpty() && similarity >= policy.advanceOnMatchSimilarity ->
-                            "Looks like the photo (%.0f%%) - still looking for %s"
+                        missing.isNotEmpty() ->
+                            "Nearly there (%.0f%%) - still looking for %s"
                                 .format(similarity * 100, missing.take(2).joinToString(", "))
                         else ->
                             "Close to the photo for this step (%.0f%%)".format(similarity * 100)

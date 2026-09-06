@@ -311,11 +311,14 @@ data class Policy(
 
     // --- Verification cascade (does the bench look like the step?) ---
     /**
-     * Above this many changed dHash bits between frames the phone is still
-     * moving, and nothing is compared.
+     * Above this many changed dHash bits between frames the phone counts as
+     * moving, and the frame's evidence starts being discounted.
      *
      * A frame taken mid-swing is how an app ends up telling someone their
-     * perfectly correct bench looks wrong.
+     * perfectly correct bench looks wrong. It is no longer thrown away, though
+     * -- see [settleWeight]. A hand-held phone over a workbench is never
+     * perfectly still, and a hard cutoff here binned most frames and let the
+     * few that got through decide alone.
      */
     val checkSettledMaxChange: Int = 14,
     /** At or above this similarity the scene matches the step's photograph. */
@@ -338,6 +341,63 @@ data class Policy(
      * a step in progress rather than a step finished.
      */
     val checkLabelOverlap: Double = 0.75,
+
+    /**
+     * How fast confidence follows agreeing frames, 0..1 per frame.
+     *
+     * Frames arrive every 100 ms, so 0.25 means roughly half a second of
+     * frames that agree before [checkLabelOverlap] can be reached. That delay
+     * is the feature: one frame over a threshold used to be a verdict, and a
+     * hand passing across the bench read as the work being finished.
+     *
+     * Raise it and the page turns sooner and on flimsier evidence. Lower it
+     * and a learner waits with the job already done.
+     */
+    val confidenceRiseCoef: Float = 0.25f,
+
+    /**
+     * ...and how fast it fades when there is nothing to judge at all.
+     *
+     * Slower than it rises, deliberately, and the same asymmetry as
+     * [AdaptiveGate]'s floor. A reach across the camera blanks two or three
+     * frames, and that must not undo ten good ones -- an absence is not the
+     * learner getting it wrong.
+     */
+    val confidenceFallCoef: Float = 0.08f,
+
+    /** Above this confidence there is something worth mentioning on screen. */
+    val confidenceLikely: Double = 0.15,
+
+    /**
+     * How far confidence must fall back before a band is given up again.
+     *
+     * Enter high, leave low, exactly as [ModeEngine]'s Schmitt triggers do. A
+     * value resting on a band edge otherwise repaints the screen twice a
+     * second, and that flicker is the problem this product exists to solve.
+     */
+    val confidenceHysteresis: Double = 0.10,
+
+    // --- How long a model is allowed to keep the build waiting ---
+    /**
+     * Longest the recogniser may hold up a guide build, per take.
+     *
+     * A 2.7 GB Kaldi graph decoding two minutes of audio on the CPU is the case
+     * this exists for. Past this the words are dropped and the cutter falls
+     * back to pauses alone, which is exactly what it does on a phone with no
+     * recogniser at all -- a known-good state, and a far better one than a
+     * Processing screen that never moves.
+     */
+    val asrTimeoutMs: Long = 90_000,
+
+    /**
+     * ...and the same for the coach.
+     *
+     * Deliberately shorter than [asrTimeoutMs], because the transcript is
+     * load-bearing and the coach is not: without it the steps stay in the
+     * expert's own words, which is a complete guide. Absent and slow are the
+     * same thing to a person standing over a finished job.
+     */
+    val coachTimeoutMs: Long = 45_000,
 
     // --- Coach (the on-device model that rewrites steps and answers questions) ---
     /**
@@ -389,13 +449,12 @@ data class Policy(
      * How closely the camera must match the step's photograph before the guide
      * moves on by itself. 0 turns it off and waits for a person.
      *
-     * 0.70, and deliberately the same number as [checkCorrectSimilarity]. Two
-     * thresholds on one measurement is how the app came to be asked for 70%
-     * and to behave like 72%: [mayAdvance] has to clear both, so the higher
-     * one silently was the setting and the other was decoration. Equal, this
-     * one is the on/off switch (0 waits for a person) and the room to demand
-     * *more* of a page turn than of a line of advice, which is a thing someone
-     * may want and is not a thing that happens by accident.
+     * The on/off switch, and now only that: any positive value arms the page
+     * turn and 0 waits for a person. What the page turn actually needs is
+     * [StepConfidence.mayAdvance] -- confidence earned over frames, reaching
+     * [checkLabelOverlap]. Two thresholds on two different measurements is how
+     * the app came to be asked for 70% and to behave like 72%, and how a bench
+     * whose objects plainly agreed could still sit there unmoved.
      * The old 0.60 was set on the theory that turning early costs a tap
      * of Back while never turning strands someone holding a screwdriver -- and
      * on the bench it turned on a desk that merely looked like the desk, with

@@ -15,7 +15,18 @@ import java.io.File
  * Deliberately plain file IO -- no Room, no DataStore. A guide you can drag
  * from one phone to another with a file manager is the sharing story.
  */
-class GuideStore(private val root: File) {
+class GuideStore(
+    private val root: File,
+    /**
+     * Where a failed write is reported.
+     *
+     * A callback and not a `Log.e`, for the same reason
+     * [com.showhow.core.PolicyStore] takes one: this class holds the only copy
+     * of an expert's work and it must stay testable on the JVM, which means it
+     * must stay free of `android.*`. The ViewModel passes the logger.
+     */
+    private val onError: (String, Throwable) -> Unit = { _, _ -> },
+) {
 
     fun dir(id: String): File = File(root, id).apply { mkdirs() }
 
@@ -104,9 +115,12 @@ class GuideStore(private val root: File) {
         runCatching { Policy.json.decodeFromString(Guide.serializer(), guideFile(id).readText()) }
             .getOrNull()
 
-    fun save(guide: Guide) {
-        guideFile(guide.id).writeText(Policy.json.encodeToString(Guide.serializer(), guide))
-    }
+    /**
+     * @return false when the guide could not be written. The caller decides
+     *   what to tell the expert; what it must not do is assume it worked.
+     */
+    fun save(guide: Guide): Boolean =
+        writeAtomically(guideFile(guide.id), Policy.json.encodeToString(Guide.serializer(), guide))
 
     /**
      * Replace the detector's captions in every copy of this guide, keyed by
@@ -134,9 +148,7 @@ class GuideStore(private val root: File) {
                     byPhoto[s.photo]?.let { s.copy(caption = captionOf(it), objects = it) } ?: s
                 },
             )
-            runCatching {
-                file.writeText(Policy.json.encodeToString(Guide.serializer(), patched))
-            }
+            writeAtomically(file, Policy.json.encodeToString(Guide.serializer(), patched))
         }
     }
 
@@ -146,10 +158,14 @@ class GuideStore(private val root: File) {
      * Both files, so the working copy and the verified copy agree at the moment
      * of verification and only drift once someone edits again.
      */
-    fun saveVerified(guide: Guide) {
+    fun saveVerified(guide: Guide): Boolean {
         val stamped = guide.copy(verifiedAt = System.currentTimeMillis())
-        save(stamped)
-        verifiedFile(guide.id).writeText(Policy.json.encodeToString(Guide.serializer(), stamped))
+        val draft = save(stamped)
+        val verified = writeAtomically(
+            verifiedFile(guide.id),
+            Policy.json.encodeToString(Guide.serializer(), stamped),
+        )
+        return draft && verified
     }
 
     /**
@@ -168,6 +184,41 @@ class GuideStore(private val root: File) {
 
     fun delete(id: String) {
         File(root, id).deleteRecursively()
+    }
+
+    /**
+     * Write a file so that a failure loses the *new* version rather than the
+     * old one.
+     *
+     * `writeText` truncates first and then writes. A phone that runs out of
+     * space, or is killed, halfway through leaves a half a JSON object on
+     * disk -- and a guide.json that will not parse is a guide that has
+     * disappeared from the library, take, photographs and all. The expert's
+     * recording is still in the folder and nothing in the app can reach it.
+     *
+     * So: write beside it, then rename. Rename within a directory is atomic on
+     * every filesystem Android ships, so at every instant guide.json is either
+     * entirely the old version or entirely the new one.
+     *
+     * @return false if nothing was written. Never throws -- a full disk is a
+     *   thing to tell someone about, not a thing to crash on.
+     */
+    private fun writeAtomically(file: File, text: String): Boolean = runCatching {
+        file.parentFile?.mkdirs()
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.writeText(text)
+        if (tmp.renameTo(file)) return@runCatching true
+        // Some filesystems refuse a rename onto an existing file. Falling back
+        // to a plain overwrite reopens the truncation window, so it is only
+        // done when the safe path is unavailable -- and the temp file is left
+        // behind on failure, which is the only surviving copy of the new
+        // version if the overwrite dies.
+        file.writeText(text)
+        tmp.delete()
+        true
+    }.getOrElse {
+        onError("could not write ${file.name}", it)
+        false
     }
 
     fun newId(): String = "g" + System.currentTimeMillis()

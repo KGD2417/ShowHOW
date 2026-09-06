@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
@@ -57,12 +58,44 @@ class AudioRecorder {
     @Volatile
     private var recording = false
 
+    /**
+     * Why the last take produced nothing, or null.
+     *
+     * A microphone another app is holding, or a permission revoked between the
+     * tap and the read, is not a crash and it is not a quiet room -- and from
+     * the level meter alone those two look identical. The Debug screen shows
+     * this; the same pattern as [com.showhow.core.PolicyStore.lastError].
+     */
+    @Volatile
+    var lastError: String? = null
+        private set
+
     fun stop() {
         recording = false
     }
 
+    /**
+     * Record until [stop], writing a PCM16/16k/mono WAV.
+     *
+     * Never throws. The microphone can be held by another app -- the system
+     * recogniser we ourselves just used is a candidate -- and the constructor
+     * and `startRecording` both raise on that. Thrown out of the coroutine that
+     * calls this, it took the whole app down; here it becomes [lastError] and
+     * a flat meter, which is a thing the expert can see and act on.
+     */
     @SuppressLint("MissingPermission")
     suspend fun record(out: File): Unit = withContext(Dispatchers.IO) {
+        lastError = null
+        try {
+            open(out)
+        } catch (t: Throwable) {
+            recording = false
+            lastError = t.message ?: t::class.java.simpleName
+            Log.e(TAG, "the microphone would not open", t)
+        }
+    }
+
+    private suspend fun open(out: File) {
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
         val bufBytes = maxOf(minBuf, HOP_SAMPLES * 2 * 4)
         // VOICE_RECOGNITION, not MIC. It is the input path the platform tunes
@@ -86,9 +119,23 @@ class AudioRecorder {
             try {
                 rec.startRecording()
                 recording = true
-                while (recording && this@withContext.isActive) {
+                var badReads = 0
+                while (recording && currentCoroutineContext().isActive) {
                     val n = rec.read(buf, 0, buf.size)
-                    if (n <= 0) continue
+                    if (n <= 0) {
+                        // read() returns negative constants for a dead or
+                        // invalid recorder, and `continue` on one of those is a
+                        // tight loop that never ends: a hot CPU, a flat
+                        // battery and a take that never finishes. A handful in
+                        // a row is a broken microphone, not a slow one.
+                        if (n < 0 && ++badReads >= MAX_BAD_READS) {
+                            lastError = "microphone stopped responding (code $n)"
+                            Log.e(TAG, "giving up: $badReads reads returned $n")
+                            break
+                        }
+                        continue
+                    }
+                    badReads = 0
                     _levels.tryEmit(dbfs(buf, n))
                     val bytes = ByteArray(n * 2)
                     for (i in 0 until n) {
@@ -115,12 +162,19 @@ class AudioRecorder {
                 }
             } finally {
                 recording = false
+                // Every one of these guarded, and the header last, because the
+                // header is the take. A release() that throws used to skip the
+                // rewrite and leave a WAV whose header claims zero bytes --
+                // unplayable, untranscribable, and the expert's ninety seconds
+                // gone while the file sat there full of audio.
                 effects.forEach { runCatching { it.release() } }
                 runCatching { rec.stop() }
-                rec.release()
-                // Sizes are only known now, so rewrite the header in place.
-                raf.seek(0)
-                raf.write(wavHeader(frames * 2))
+                runCatching { rec.release() }
+                runCatching {
+                    // Sizes are only known now, so rewrite the header in place.
+                    raf.seek(0)
+                    raf.write(wavHeader(frames * 2))
+                }.onFailure { Log.e(TAG, "could not finish the wav header", it) }
             }
         }
     }
@@ -159,6 +213,15 @@ class AudioRecorder {
 
     companion object {
         private const val TAG = "AudioRecorder"
+
+        /**
+         * Consecutive negative reads before the microphone is declared dead.
+         *
+         * Not a tunable: below a handful it would give up on a transient, and
+         * any larger number is still a fraction of a second of a loop that is
+         * doing nothing.
+         */
+        private const val MAX_BAD_READS = 20
 
         const val SAMPLE_RATE = 16_000
         const val CHANNEL = AudioFormat.CHANNEL_IN_MONO

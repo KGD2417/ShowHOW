@@ -13,7 +13,7 @@ enum class StepCheck {
     /** The scene matches the step's photograph and the same things are in it. */
     CORRECT,
 
-    /** One of those two, not both. Worth saying, not worth insisting on. */
+    /** Some of the evidence is there. Worth saying, not worth insisting on. */
     LIKELY_CORRECT,
 
     /**
@@ -27,7 +27,7 @@ enum class StepCheck {
 }
 
 /**
- * What the cascade is given. All of it already exists elsewhere in the app.
+ * What the check is given. All of it already exists elsewhere in the app.
  *
  * @param sceneSimilarity [SceneHash.similarity] between the live frame and the
  *   step's saved photograph, 0..1. Zero when nothing is being watched.
@@ -44,103 +44,159 @@ data class CheckInputs(
 )
 
 /**
- * Decide how well the current view matches the step, without waking a model.
+ * How much this one frame agrees with the step, 0..1, or null when the frame
+ * has nothing to say at all.
  *
- * A cascade, cheapest first, and the expensive rung is deliberately never
- * reached from here:
- *
- *   1. **Has the scene settled?** A frame taken mid-swing tells nobody
- *      anything, and comparing one is how an app ends up saying "this looks
- *      wrong" at a bench that is perfectly correct.
- *   2. **Does it look like the photograph?** [SceneHash] -- a dHash and a
- *      colour histogram, a couple of milliseconds, no model file.
- *   3. **Are the same things in it?** The detector's labels for this frame
- *      against its labels for the step's photograph. Ordinary object classes,
- *      compared with each other, which is the one comparison they are
- *      trustworthy for.
- *   4. **Otherwise UNCERTAIN**, and stop.
- *
- * Rung four is where a language model *could* be asked, and this function does
- * not ask it. A 2B model woken on every camera frame would drain the phone and
- * lock the UI for seconds at a time; the coach is invoked when a learner taps
- * Ask, by a person who wants an answer, and never by a frame arriving.
+ * A number rather than a verdict, and that is the whole change. A frame at 74%
+ * of the expected boxes and a frame at 76% are the same bench photographed a
+ * moment apart; a threshold applied to each of them separately turns that into
+ * "can't tell" followed by "that looks right", which is the app looking broken
+ * twice in a row. The verdict is made later, in [StepConfidence], out of many
+ * of these.
  *
  * Nothing here reads a label as a component. The loaded detector knows "laptop"
  * and "keyboard" and has no idea what a RAM module is -- so this compares its
  * labels to its own earlier labels and draws no conclusion about parts.
  */
-fun checkStep(i: CheckInputs, p: Policy = Policy.DEFAULT): StepCheck {
-    // 1. Still moving. Nothing to compare yet, and a wrong answer now is worse
-    //    than none, because the learner is still lifting the phone.
-    if (i.frameToFrameChange > p.checkSettledMaxChange) return StepCheck.UNCERTAIN
+fun frameEvidence(i: CheckInputs, p: Policy = Policy.DEFAULT): Float? {
+    // What the detector found, against what it found in the photograph,
+    // counted. Where it has an opinion, it is the opinion: everyone's desk,
+    // lighting and camera angle differ, and the objects are the part that
+    // travels between benches.
+    labelOverlap(i.expected, i.seen)?.let { return it.toFloat() }
 
-    // Nothing is being watched at all: camera off, or no saved photograph to
-    // compare against. Not a disagreement -- an absence.
-    if (i.sceneSimilarity <= 0f && i.seen.isEmpty()) return StepCheck.UNCERTAIN
-
-    // 2. What the detector found, against what it found in the photograph,
-    //    counted. This is the rung that decides, and it is first now.
-    val overlap = labelOverlap(i.expected, i.seen)
-
-    // 3. Structure and colour against the step's photograph. Corroboration
-    //    only -- see the note below on why it cannot decide anything.
-    val looksRight = i.sceneSimilarity >= p.checkCorrectSimilarity
-    val looksPlausible = i.sceneSimilarity >= p.checkLikelySimilarity
-
-    return when {
-        // The objects agree. The work is in front of the camera, wherever the
-        // camera happens to be standing.
-        overlap != null && overlap >= p.checkLabelOverlap -> StepCheck.CORRECT
-        // Some of it is there. Worth saying, not worth turning a page on.
-        overlap != null && overlap > 0.0 -> StepCheck.LIKELY_CORRECT
-        // The objects say nothing at all -- no detector, or a photograph
-        // nothing was recognised in. The bench comparison is then the only
-        // signal there is, and one signal is never CORRECT.
-        overlap == null && looksRight -> StepCheck.LIKELY_CORRECT
-        overlap == null && looksPlausible -> StepCheck.LIKELY_CORRECT
-        // The objects are not there. A bench that still *looks* like the
-        // photograph while the parts are wrong is the case this must not call
-        // correct, so the scene comparison does not rescue it.
-        else -> StepCheck.UNCERTAIN
-    }
+    // No detector, or a photograph nothing was recognised in. Then, and only
+    // then, structure and colour against the step's photograph decides -- a
+    // bench that merely *looks* like the photograph while the parts are wrong
+    // must never be rescued by this, and above it never is.
+    if (i.sceneSimilarity <= 0f) return null
+    return ramp(i.sceneSimilarity, p.checkLikelySimilarity, p.checkCorrectSimilarity)
 }
 
 /**
- * May the guide turn its own page right now?
+ * How much this frame's evidence is worth, 1 for a still phone down to 0 for
+ * one still swinging.
  *
- * One function and not a condition spelled out at the call site, because the
- * screen and the page turn have to agree: a bar that says "that looks right"
- * over a guide that then sits there is the app contradicting itself, and that
- * is what a learner reads as broken.
- *
- * Two things have to hold. The scene has to reach
- * [Policy.advanceOnMatchSimilarity] -- turning the page is a louder claim than
- * a line of advice, so it gets its own, higher bar. And [checkStep] has to
- * agree, with one exception spelled out below.
- *
- * The exception is the reason this is not simply `check == CORRECT`. CORRECT
- * means two independent signals agreed, and on a phone with no detector model
- * -- or on a step whose photograph nothing was recognised in -- the second
- * signal does not exist and never will. Refusing to ever turn the page there
- * would strand every learner on such a guide holding a screwdriver, so the
- * scene comparison decides alone. Labels that *are* present and *disagree* are
- * a different thing entirely, and still stop it.
+ * The old code threw the frame away above [Policy.checkSettledMaxChange], and
+ * that is half of why the check could never make its mind up: a hand-held
+ * phone over a workbench is never perfectly still, so most frames counted for
+ * nothing and the few that got through decided alone. Faded instead -- a
+ * slightly shaky frame is weak evidence, not no evidence, and only a frame
+ * changing twice over the threshold is worth nothing at all.
  */
-fun mayAdvance(i: CheckInputs, p: Policy = Policy.DEFAULT): Boolean {
-    // 0 turns the whole behaviour off and waits for a person.
-    if (p.advanceOnMatchSimilarity <= 0f) return false
-    return when (checkStep(i, p)) {
-        // The objects agreed. That is a claim about the work, and it holds on
-        // a bench this app has never seen.
-        StepCheck.CORRECT -> true
-        // Nothing to compare objects with. Then, and only then, the bench
-        // comparison decides alone, at its own higher bar -- otherwise a guide
-        // whose photographs the detector had no word for could never move by
-        // itself at all.
-        StepCheck.LIKELY_CORRECT ->
-            labelOverlap(i.expected, i.seen) == null &&
-                i.sceneSimilarity >= p.advanceOnMatchSimilarity
-        StepCheck.UNCERTAIN -> false
+fun settleWeight(frameToFrameChange: Int, p: Policy = Policy.DEFAULT): Float {
+    val steady = p.checkSettledMaxChange.toFloat()
+    return ramp(frameToFrameChange.toFloat(), 2f * steady, steady)
+}
+
+/**
+ * The running answer to "does this look like the step", over frames rather
+ * than off one of them.
+ *
+ * Two failures it exists to remove, both reported from the bench:
+ *
+ *  - **It could never get confident enough.** Every frame was judged alone and
+ *    any camera movement discarded it outright, so the evidence never added up
+ *    and the page never turned.
+ *  - **Then it would suddenly be certain.** One frame landing over a hard
+ *    threshold was a verdict, so a hand passing across the bench read as the
+ *    work being finished.
+ *
+ * An exponential average fixes both: confidence has to be *earned* over about
+ * half a second of agreeing frames before it can reach CORRECT, and it survives
+ * the odd bad frame instead of collapsing. The bands then have separate enter
+ * and exit levels ([Schmitt]), so a value sitting on the line cannot flicker --
+ * the same trick, and for the same reason, as [ModeEngine].
+ *
+ * Stateful, and therefore [reset] on every step change.
+ */
+class StepConfidence(private val p: Policy = Policy.DEFAULT) {
+
+    /**
+     * 0..1, and the number the screen should show.
+     *
+     * The raw scene similarity was on screen before this existed, next to a
+     * verdict computed from something else. "84%" over "can't tell yet" is two
+     * measurements pretending to be one, and the learner believes the one they
+     * can read.
+     */
+    var value: Float = 0f
+        private set
+
+    var check: StepCheck = StepCheck.UNCERTAIN
+        private set
+
+    private val correct = Schmitt(
+        p.checkLabelOverlap,
+        p.checkLabelOverlap - p.confidenceHysteresis,
+    )
+    private val likely = Schmitt(
+        p.confidenceLikely,
+        p.confidenceLikely - p.confidenceHysteresis,
+    )
+
+    /**
+     * May the guide turn its own page right now?
+     *
+     * One value and not a condition spelled out at the call site, because the
+     * screen and the page turn have to agree: a bar that says "that looks
+     * right" over a guide that then sits there is the app contradicting
+     * itself, and that is what a learner reads as broken.
+     *
+     * CORRECT is the whole bar now. It used to be CORRECT *plus* a second
+     * similarity threshold on a different measurement, which is one of the two
+     * ways the page turn could be unreachable on a bench that plainly matched.
+     * [Policy.advanceOnMatchSimilarity] keeps its job as the on/off switch and
+     * gives up its second one.
+     */
+    val mayAdvance: Boolean
+        get() = p.advanceOnMatchSimilarity > 0f && check == StepCheck.CORRECT
+
+    /** Feed one analysed frame. Returns the band to show right now. */
+    fun update(i: CheckInputs): StepCheck {
+        val weight = settleWeight(i.frameToFrameChange, p)
+        val evidence = frameEvidence(i, p)
+        value += if (evidence != null && weight > 0f) {
+            // Weighted by how still the phone was, so a shaky frame nudges
+            // where a steady one moves.
+            p.confidenceRiseCoef * weight * (evidence - value)
+        } else {
+            // Camera off, phone mid-swing, nothing in shot. That is an absence
+            // and not a disagreement, so confidence fades rather than being
+            // scored zero -- and it fades slower than it builds, or a hand
+            // reaching across the bench would undo ten good frames.
+            p.confidenceFallCoef * (0f - value)
+        }
+        // An average only ever approaches its target, and a band set exactly at
+        // that target is then unreachable: three of four expected boxes is
+        // 0.75 on every frame forever, and 0.75 is the bar. Close enough is
+        // arrival -- this is float convergence, not a tunable.
+        if (evidence != null && weight > 0f && kotlin.math.abs(evidence - value) < ARRIVED) {
+            value = evidence
+        }
+        value = value.coerceIn(0f, 1f)
+
+        // Both, every frame, whichever wins: a Schmitt that is only asked
+        // sometimes keeps a stale state and reports it later as news.
+        val isCorrect = correct.update(value.toDouble())
+        val isLikely = likely.update(value.toDouble())
+        check = when {
+            isCorrect -> StepCheck.CORRECT
+            isLikely -> StepCheck.LIKELY_CORRECT
+            else -> StepCheck.UNCERTAIN
+        }
+        return check
+    }
+
+    fun reset() {
+        value = 0f
+        check = StepCheck.UNCERTAIN
+        correct.reset()
+        likely.reset()
+    }
+
+    private companion object {
+        const val ARRIVED = 0.005f
     }
 }
 
@@ -186,3 +242,6 @@ private fun counts(labels: List<String>): Map<String, Int> =
         .groupingBy { it }
         .eachCount()
 
+/** 0 at [lo], 1 at [hi], a straight line between. [hi] below [lo] runs downhill. */
+private fun ramp(v: Float, lo: Float, hi: Float): Float =
+    if (lo == hi) (if (v >= hi) 1f else 0f) else ((v - lo) / (hi - lo)).coerceIn(0f, 1f)

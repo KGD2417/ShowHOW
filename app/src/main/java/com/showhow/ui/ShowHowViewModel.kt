@@ -42,9 +42,8 @@ import com.showhow.core.ModeEngine
 import com.showhow.core.ModeInputs
 import com.showhow.core.CheckInputs
 import com.showhow.core.StepCheck
-import com.showhow.core.checkStep
 import com.showhow.core.labelShortfall
-import com.showhow.core.mayAdvance
+import com.showhow.core.StepConfidence
 import com.showhow.core.correctDomainText
 import com.showhow.core.correctDomainTokens
 import com.showhow.core.correctionEvidence
@@ -67,6 +66,10 @@ import com.showhow.data.asDraft
 import com.showhow.data.Provenance
 import com.showhow.data.provenanceOf
 import java.io.File
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -75,6 +78,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Everything the debug screen shows. One object so it repaints atomically. */
 data class DebugState(
@@ -116,7 +120,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     val policy: StateFlow<Policy> = policyRepo.policy
 
-    val guides = GuideStore(File(app.filesDir, "guides"))
+    val guides = GuideStore(File(app.filesDir, "guides")) { msg, t ->
+        Log.e(TAG, msg, t)
+    }
 
     private val gestureSource = gestureSourceOrNone(
         app,
@@ -331,7 +337,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     val stepCheck: StateFlow<StepCheck> = _stepCheck.asStateFlow()
 
     /**
-     * Whether the guide may turn its own page this instant. See [mayAdvance].
+     * Whether the guide may turn its own page. See [StepConfidence.mayAdvance].
      *
      * A flow rather than a condition the Player assembles from two others,
      * because it was assembled from two others and they were read at different
@@ -340,6 +346,24 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _mayAdvance = MutableStateFlow(false)
     val mayAdvance: StateFlow<Boolean> = _mayAdvance.asStateFlow()
+
+    /**
+     * How sure the check is, 0..1, smoothed over frames.
+     *
+     * The number the Player puts on screen. It used to show [sceneSimilarity]
+     * raw, which is a different measurement from the one the verdict was made
+     * on and jumps ten points between two frames of the same still bench --
+     * so the percentage and the sentence under it disagreed, and a learner
+     * believes the percentage.
+     */
+    private val _confidence = MutableStateFlow(0f)
+    val confidence: StateFlow<Float> = _confidence.asStateFlow()
+
+    /**
+     * The running verdict. Rebuilt at every step change, which is also when a
+     * policy.json pushed to the phone mid-session takes effect.
+     */
+    private var stepConfidence = StepConfidence(policy.value)
 
     /**
      * Labels the step's photograph had that the camera is not showing, so the
@@ -540,8 +564,12 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             ?.let { vocab -> expected.filter { it.trim().lowercase() in vocab } }
             ?: expected
         lastFrameHash = null
+        // A new step is a new question. Nothing carried over from the last one
+        // is evidence about this one.
+        stepConfidence = StepConfidence(policy.value)
         _stepCheck.value = StepCheck.UNCERTAIN
         _mayAdvance.value = false
+        _confidence.value = 0f
         _missingLabels.value = expected
         sceneReference?.recycle()
         // A guide photo is a full-resolution JPEG and SceneHash only ever
@@ -611,7 +639,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Run the verification cascade over the frame the analyzer already has.
+     * Feed one frame to the running check.
      *
      * Reuses the same 32x32 pixels SceneHash works on, so the cost is one small
      * scale and a dHash -- there is no second decode and no second model.
@@ -628,12 +656,32 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             expected = expectedLabels,
             seen = seen,
         )
-        _stepCheck.value = checkStep(inputs, policy.value)
-        // Same inputs, same instant, one decision -- so the bar and the page
-        // turn can never disagree about what the camera is showing.
-        _mayAdvance.value = mayAdvance(inputs, policy.value)
+        // One accumulator, so the bar, the percentage and the page turn are
+        // three readings of the same number rather than three opinions.
+        _stepCheck.value = stepConfidence.update(inputs)
+        _confidence.value = stepConfidence.value
+        _mayAdvance.value = stepConfidence.mayAdvance
         _missingLabels.value = labelShortfall(expectedLabels, seen)
     }
+
+    /**
+     * Every background job in this class starts here, and the guarantee is the
+     * one that matters on a stage: a job that throws logs and dies alone
+     * instead of taking the app with it.
+     *
+     * `viewModelScope.launch` does not swallow anything -- an exception out of
+     * one of these reaches the thread's uncaught handler, which is a crash
+     * dialog in front of a judge. Twelve of them ran unguarded: the recorder
+     * against a microphone another app was holding, the guide build against a
+     * full disk, the coach against a model that would not load.
+     */
+    private fun launch(
+        context: CoroutineContext = EmptyCoroutineContext,
+        block: suspend CoroutineScope.() -> Unit,
+    ): Job = viewModelScope.launch(
+        context + CoroutineExceptionHandler { _, t -> Log.e(TAG, "background job died", t) },
+        block = block,
+    )
 
     private val _screen = MutableStateFlow<Screen>(Screen.Library)
     val screen: StateFlow<Screen> = _screen.asStateFlow()
@@ -743,7 +791,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 ", languages = " + languages,
         )
         refreshLibrary()
-        viewModelScope.launch {
+        launch {
             policy.collect { p ->
                 // Retune live. This is the whole point of policy.json.
                 gate = AdaptiveGate(p)
@@ -751,7 +799,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 _debug.value = _debug.value.copy(policyError = policyRepo.lastError)
             }
         }
-        motionJob = viewModelScope.launch {
+        motionJob = launch {
             motion.variance().collect { v -> onMotion(v) }
         }
     }
@@ -821,11 +869,11 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             recording = true, samples = 0, liveCuts = 0, snaps = 0, elapsedMs = 0,
         )
 
-        levelJob = viewModelScope.launch {
+        levelJob = launch {
             recorder.levels.collect { db -> onLevel(db.toDouble()) }
         }
         startLiveTranscript()
-        recordJob = viewModelScope.launch {
+        recordJob = launch {
             recorder.record(guides.takeFile(id))
         }
         // First photo now, so step one always has a picture even if the expert
@@ -849,7 +897,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // looks broken even when the transcript arrives correctly at Review.
         val stream = (voskAsr as? VoskAsr)?.openStream(_lang.value) ?: return
         liveStream = stream
-        pcmJob = viewModelScope.launch(Dispatchers.Default) {
+        pcmJob = launch(Dispatchers.Default) {
             recorder.pcm.collect { chunk ->
                 stream.feed(chunk)?.let {
                     _liveTranscript.value = correctDomainText(it, policy.value.domainWords)
@@ -874,7 +922,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun startPeriodicCapture() {
         snapJob?.cancel()
-        snapJob = viewModelScope.launch {
+        snapJob = launch {
             while (_debug.value.recording) {
                 kotlinx.coroutines.delay(policy.value.snapIntervalMs.coerceAtLeast(250))
                 if (!_debug.value.recording) break
@@ -930,11 +978,53 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         }
         _buildProgress.value = BuildStage.TRANSCRIBING
         go(Screen.Processing)
-        viewModelScope.launch {
-            val built = buildGuide(id)
+        launch {
+            // The expert has just done the job once and talked through it, and
+            // the take is already on disk. Whatever goes wrong from here -- a
+            // full disk, a model that will not load, a photograph that will not
+            // decode -- must not end with them looking at a Processing screen
+            // that never moves, and must not lose the recording.
+            val built = runCatching { buildGuide(id) }.getOrElse { t ->
+                Log.e(TAG, "building $id failed, falling back to the raw take", t)
+                salvageGuide(id)
+            }
             _buildProgress.value = BuildStage.DONE
             go(Screen.Review(built))
         }
+    }
+
+    /**
+     * The guide you get when building one properly did not work.
+     *
+     * One step spanning the whole take, no photograph, no transcript -- and the
+     * expert's own audio, which is the part that cannot be regenerated and the
+     * part they actually came to record. Everything else in a guide can be
+     * rebuilt from it later; the ninety seconds cannot.
+     *
+     * Saved under the same id, so the Review screen opens on it and Split still
+     * works. If even this write fails there is nothing left to do but say so --
+     * the folder is still on disk with the WAV in it.
+     */
+    private fun salvageGuide(id: String): String {
+        val durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
+        val guide = Guide(
+            id = id,
+            title = "Unfinished recording",
+            lang = _lang.value,
+            createdAt = System.currentTimeMillis(),
+            steps = listOf(
+                Step(
+                    index = 0,
+                    title = "Step 1",
+                    startMs = 0,
+                    endMs = durationMs,
+                    modeHint = "This guide could not be built. The recording is here in full.",
+                ),
+            ),
+        )
+        if (!guides.save(guide)) Log.e(TAG, "could not even save the salvage guide for $id")
+        refreshLibrary()
+        return id
     }
 
     private suspend fun buildGuide(id: String): String = withContext(Dispatchers.Default) {
@@ -949,12 +1039,18 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // these two stages depends on which one is running.
         val timed = ai.asr.hasWordTimings
         val words = if (timed) {
-            runCatching { ai.asr.transcribe(guides.takeFile(id), _lang.value) }
-                .getOrDefault(emptyList())
-                .let { corrected(it, p.domainWords) }
+            // Bounded here rather than inside each recogniser, because the bound
+            // belongs to the guide build and not to any one model: a 2.7 GB
+            // Kaldi graph decoding a long take on the CPU is the case, and an
+            // unbounded wait is a Processing screen that never moves.
+            withTimeoutOrNull(p.asrTimeoutMs) {
+                runCatching { ai.asr.transcribe(guides.takeFile(id), _lang.value) }
+                    .getOrDefault(emptyList())
+            }.orEmpty().let { corrected(it, p.domainWords) }
         } else {
             emptyList()
         }
+        if (timed && words.isEmpty()) Log.w(TAG, "no words from the recogniser for $id")
 
         _buildProgress.value = BuildStage.CUTTING
         val confirmer = LinkWordConfirmer(
@@ -1017,7 +1113,17 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // not per step: "phir isko nikaalo" only becomes "now lift the RAM
         // module out" if the model has already seen the three steps before it.
         _buildProgress.value = BuildStage.COACHING
-        val (coachTitle, coached) = coachSteps(steps, words)
+        // The coach is the largest model in the app by two orders of magnitude
+        // and the only one whose load time has never been measured. Absent, it
+        // is a correct no-op and the steps stay in the expert's own words --
+        // so a coach that is merely slow gets to be absent too, rather than
+        // holding the whole build open behind it.
+        val (coachTitle, coached) =
+            withTimeoutOrNull(p.coachTimeoutMs) { coachSteps(steps, words) }
+                ?: run {
+                    Log.w(TAG, "coach did not answer within ${p.coachTimeoutMs} ms")
+                    "" to steps
+                }
 
         _buildProgress.value = BuildStage.SAVING
         val guide = Guide(
@@ -1030,7 +1136,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             createdAt = System.currentTimeMillis(),
             steps = coached,
         )
-        guides.save(guide)
+        if (!guides.save(guide)) Log.e(TAG, "could not save $id")
         // Everything the picker passed over. Capturing densely and keeping it
         // all would cost fifty megabytes a guide; the take, the chosen frames
         // and guide.json are what a guide actually is.
@@ -1363,7 +1469,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         val g = _editing.value ?: return
         if (recordJob != null || index !in g.steps.indices) return
         _reRecording.value = index
-        recordJob = viewModelScope.launch {
+        recordJob = launch {
             recorder.record(guides.stepAudioFile(g.id, index))
         }
     }
@@ -1491,7 +1597,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         _coachAnswer.value = CoachAnswer(question, thinking = true)
-        coachJob = viewModelScope.launch {
+        coachJob = launch {
             // Assembled here because this is the only place that knows all
             // three: the guide on disk, the step the learner is looking at, and
             // what the detector is reporting through the camera this second.
@@ -1658,7 +1764,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         if (from > g.steps.lastIndex || !coach.present) return
         // Off the main thread: this reads and rewrites guide.json once per
         // step, and the learner is watching an animation while it happens.
-        prefetchJob = viewModelScope.launch(Dispatchers.IO) {
+        prefetchJob = launch(Dispatchers.IO) {
             for (i in from..g.steps.lastIndex) {
                 // Re-read each time: the foreground translation of the step
                 // being read writes into the same file, and prefetching on a
@@ -1724,7 +1830,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // The wav is the recorder's price of admission, not something anyone
         // keeps: a question is not part of the guide.
         val scratch = File(getApplication<Application>().cacheDir, "question.wav")
-        questionJob = viewModelScope.launch {
+        questionJob = launch {
             launch(Dispatchers.Default) {
                 recorder.pcm.collect { chunk -> stream.feed(chunk)?.let { _question.value = it } }
             }
@@ -1932,7 +2038,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         val index = snapTimesMs.size
         snapTimesMs += System.currentTimeMillis() - startedAt
         _debug.value = _debug.value.copy(snaps = snapTimesMs.size)
-        viewModelScope.launch {
+        launch {
             runCatching { cam.takePhoto(guides.snapFile(id, index)) }
         }
     }

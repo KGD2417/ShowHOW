@@ -214,12 +214,15 @@ exposes one `DebugState` so the debug screen repaints atomically.
 
 Ranked. Fix from the top. Everything here was checked against the code.
 
-1. **No coach model exists on any phone.** `ai/Coach` is written, compiled and
-   covered by tests against canned replies, and has never been loaded. Its load
-   time, inference latency and memory use are unmeasured, and it will contend
-   for RAM with Vosk and two MediaPipe graphs. Until a `.task` file is pushed,
-   every coach path is a correct no-op and the app behaves as it did before the
-   coach existed.
+1. **The coach's load time and memory use are still unmeasured.**
+   `models/coach.task` is now on the demo phone -- 3.13 GB of Gemma 3n E2B
+   int4 -- but nothing in any log says it has ever finished loading, and it
+   contends for RAM with Vosk and two MediaPipe graphs. It can no longer stall
+   a guide build: the call is bounded by `Policy.coachTimeoutMs` and a coach
+   that does not answer in time is treated exactly like a coach that is absent,
+   which is a correct no-op with the steps left in the expert's own words.
+   Measuring it is still the single largest unknown in the project -- the
+   engine already prints `coach on <backend> in N ms`, so it costs one load.
 2. **`userFar` is still hardcoded `false`.** It needs a face height in pixels;
    `ShowHowViewModel.feedFaceSize` and `Policy.userFarFaceHeightPx` are in place
    waiting for a MediaPipe face detector. The suggested brightness proxy is not
@@ -251,6 +254,29 @@ deleted, every model is real); `RealSceneCheck` being unwired; `LinkWordConfirme
 being a no-op; the guide language being hardcoded `"hi"`; `Guide.title` being
 uneditable; `commit()` overwriting the coach's step titles; `Step.warning` never
 being written; and guide building running on the main thread.
+
+## 10b. What happens when something fails
+
+Ranked by what it costs the person holding the phone. All five are held by
+tests or by a guard at the one place every caller routes through.
+
+**The take is the thing that cannot be regenerated.** An expert does the job
+once. Everything else in a guide -- cuts, photographs, captions, rewrites --
+can be rebuilt from `take.wav` later, and `take.wav` cannot be rebuilt from
+anything. Every decision below follows from that.
+
+| Failure | Before | Now |
+|---|---|---|
+| A background job throws | Uncaught out of `viewModelScope.launch`, straight to the thread's uncaught handler -- a crash dialog | Every job in the ViewModel goes through one private `launch` that installs a `CoroutineExceptionHandler`. It logs and dies alone. |
+| The guide build fails anywhere | The coroutine dies, the Processing screen never moves, the take is unreachable | `salvageGuide` writes a one-step guide spanning the whole take and opens Review on it. The recording is always playable. |
+| A recogniser or the coach hangs | Unbounded wait behind the Processing screen | `Policy.asrTimeoutMs` (90 s) and `Policy.coachTimeoutMs` (45 s), applied at the call site where the policy is in hand, so they bound *any* implementation rather than one model |
+| A write is interrupted -- full disk, process killed | `writeText` truncates first, so a half-written `guide.json` will not parse and the guide vanishes from the library, take and photographs with it | Write beside it, then rename. Rename within a directory is atomic, so `guide.json` is at every instant entirely the old version or entirely the new one. `save` returns false instead of throwing. |
+| The microphone will not open, or dies mid-take | The constructor threw out of the record job (a crash), or `read()` returned a negative error code forever and the loop span on it | `AudioRecorder.lastError` and a flat meter. Twenty consecutive bad reads ends the take rather than the battery. The WAV header rewrite is guarded and runs last, because a header claiming zero bytes is a lost take. |
+
+`GuideStore` reports failures through an `onError` callback rather than
+`Log.e`, the same shape as `PolicyStore`, so the class that holds the only copy
+of an expert's work stays free of `android.*` and testable on the JVM.
+`GuideStoreWriteTest` is what keeps the atomic write atomic.
 
 ## 11. Dependencies, and the model files that are not in git
 

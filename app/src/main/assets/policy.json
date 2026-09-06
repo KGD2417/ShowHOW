@@ -129,6 +129,12 @@
     "checkCorrectSimilarity": 0.7,
     "checkLikelySimilarity": 0.55,
     "checkLabelOverlap": 0.75,
+    "confidenceRiseCoef": 0.25,
+    "confidenceFallCoef": 0.08,
+    "confidenceLikely": 0.15,
+    "confidenceHysteresis": 0.1,
+    "asrTimeoutMs": 90000,
+    "coachTimeoutMs": 45000,
     "toolWords": [
         "screwdriver",
         "phillips",

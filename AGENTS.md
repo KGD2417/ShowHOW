@@ -14,9 +14,14 @@ back here.
 ## 1. What ShowHow is
 
 An offline Android app. An expert does a job once and narrates it in Hindi or
-Marathi. The phone turns that single take into a step-by-step guide — one photo
+English. The phone turns that single take into a step-by-step guide — one photo
 and one audio slice per step. Anyone else then runs the guide hands-free.
 Everything runs on the device; nothing leaves the phone.
+
+Marathi is not offered for recording: Vosk ships no Marathi model, and a button
+that records a take and returns nothing is the failure this app refuses. The
+Marathi linking words, voice and labels are all still there for guides already
+recorded in it. See `VoskAsr.LANGUAGES`.
 
 Built for **iQOO City Battles 2026** (30-hour hackathon, three-person team).
 

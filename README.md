@@ -1,6 +1,6 @@
 # ShowHow
 
-An expert does a job once and narrates it in Hindi or Marathi. The phone turns
+An expert does a job once and narrates it in Hindi or English. The phone turns
 that single take into a step-by-step guide — one photo and one slice of her own
 voice per step. Anyone else then runs the guide hands-free.
 
@@ -52,7 +52,7 @@ was deleted on purpose.
 
 | Model | Job | If it is absent |
 |---|---|---|
-| Vosk (`vosk-android`) | Hindi / Marathi / English speech **with word timings** | Empty transcripts; the pause detector stands alone |
+| Vosk (`vosk-android`) | Hindi and English speech **with word timings** | Empty transcripts; the pause detector stands alone |
 | Gemma 3n E2B (`mediapipe-tasks-genai`) | Rewrites steps into English, titles the guide, answers questions | Steps stay in the expert's own words |
 | Fine-tuned detector (`mediapipe-tasks-vision`) | `screwdriver` + five screw-head types | No tool boxes; COCO still names the room |
 | COCO detector (`mediapipe-tasks-vision`) | laptop, keyboard, mouse, person | Tools still box; the room goes unnamed |
@@ -63,6 +63,15 @@ Word timings are why Vosk and not the platform recognizer: they are how a
 transcript gets sliced per step. Detector numbers, both detectors running per
 frame, and the training pipeline are in
 [`docs/ARCHITECTURE.md §12`](docs/ARCHITECTURE.md).
+
+**Marathi is not in the recording picker, and that is deliberate.** Vosk
+publishes no Marathi model at any size, so `mr` was a button that recorded a
+take and handed back an empty transcript — the exact failure this app is built
+to refuse. What already exists is everything around the model: the Marathi
+linking words in `policy.json`, the Narrator's `mr` voice, and the library
+label. A guide already recorded as `mr` still plays. Adding the button back
+needs a model on the phone first, not a line of code — which is a file push,
+not a rebuild.
 
 Model files are gitignored and belong on the phone under `filesDir/models/`.
 `run-as` is required — `filesDir` is not world-writable, so a plain `adb push`

@@ -14,16 +14,24 @@ data class ModeInputs(
 data class ModeDecision(val mode: Mode, val reason: String)
 
 /** enter and exit deliberately differ, so a value sitting on the line cannot flip. */
-private class Schmitt(private val enter: Double, private val exit: Double) {
+internal class Schmitt(private val enter: Double, private val exit: Double) {
     var state = false
         private set
 
+    fun reset() {
+        state = false
+    }
+
     fun update(v: Double): Boolean {
         // enter > exit for "rises into true", enter < exit for the other way.
+        // Inclusive on the way in, because the thresholds are documented as
+        // "at or above" and a value that settles exactly on one -- three of
+        // four expected boxes is 0.75, and 0.75 is the bar -- would otherwise
+        // sit there forever having not quite arrived.
         state = if (enter >= exit) {
-            if (state) v >= exit else v > enter
+            if (state) v >= exit else v >= enter
         } else {
-            if (state) v <= exit else v < enter
+            if (state) v <= exit else v <= enter
         }
         return state
     }
