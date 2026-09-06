@@ -60,7 +60,17 @@ data class DetectorModel(
      * for and the overlap never produces two boxes on one laptop.
      */
     val labels: Set<String>? = null,
-    val minScore: () -> Float,
+    /**
+     * The floor for one label, because within a model they are not equally
+     * trustworthy either.
+     *
+     * The fine-tuned model's `screwdriver` class has the bulk of its training
+     * images; `square_screw` has 23 and behaves like it. On the bench the screw
+     * heads fire at low confidence on the *driver* -- a hex head boxed on a
+     * philips shaft -- so they are held to a higher bar than the class this
+     * whole model exists for.
+     */
+    val minScore: (String) -> Float,
 )
 
 /**
@@ -100,7 +110,10 @@ data class DetectorModel(
 class ObjectDetectSource(
     private val context: Context,
     private val models: List<DetectorModel>,
-    private val maxResults: Int = 4,
+    // Six, not four. With each model's slots now spent only on labels that are
+    // allowed, there is room for a driver, the screw it is going into and the
+    // laptop around them in one frame.
+    private val maxResults: Int = 6,
 ) : AutoCloseable {
 
     /** Each loaded model with the floor it is judged by. Null until first frame. */
@@ -140,12 +153,14 @@ class ObjectDetectSource(
                 dead = true
                 return Detections()
             }
-            val floor = model.minScore()
             result.detections().mapNotNull { det ->
                 val top = det.categories().maxByOrNull { it.score() } ?: return@mapNotNull null
-                if (top.score() < floor) return@mapNotNull null
                 val name = top.categoryName().ifBlank { "object" }
+                // Belt and braces. The graph allowlist above should mean this
+                // never fires; it costs a set lookup and covers a model whose
+                // metadata names its categories differently.
                 if (model.labels?.contains(name) == false) return@mapNotNull null
+                if (top.score() < model.minScore(name)) return@mapNotNull null
                 val r = det.boundingBox()
                 DetectionBox(
                     label = name,
@@ -177,10 +192,22 @@ class ObjectDetectSource(
                 }
                 for (delegate in LADDER) {
                     val started = System.currentTimeMillis()
-                    val one = runCatching { build(model.file, delegate) }.getOrElse {
-                        Log.w(TAG, "${model.file.name} would not load on $delegate", it)
-                        null
-                    } ?: continue
+                    // Allowlist first, then without it. MediaPipe validates the
+                    // category names against the model's metadata and throws if
+                    // one does not match, and a model that will not load at all
+                    // is a worse outcome than one whose slots get wasted -- the
+                    // Kotlin-side filter still produces correct boxes, just
+                    // fewer of them. Logged loudly, because it means the label
+                    // sets and the model's labels.txt have drifted apart.
+                    val one = runCatching { build(model, delegate, allowlist = true) }
+                        .recoverCatching {
+                            Log.w(TAG, "${model.file.name}: allowlist refused, filtering after", it)
+                            build(model, delegate, allowlist = false)
+                        }
+                        .getOrElse {
+                            Log.w(TAG, "${model.file.name} would not load on $delegate", it)
+                            null
+                        } ?: continue
                     Log.i(
                         TAG,
                         "${model.file.name} on $delegate in ${System.currentTimeMillis() - started} ms",
@@ -202,13 +229,17 @@ class ObjectDetectSource(
         }
     }
 
-    private fun build(file: File, delegate: Delegate): ObjectDetector =
+    private fun build(
+        model: DetectorModel,
+        delegate: Delegate,
+        allowlist: Boolean,
+    ): ObjectDetector =
         ObjectDetector.createFromOptions(
             context,
             ObjectDetector.ObjectDetectorOptions.builder()
                 .setBaseOptions(
                     BaseOptions.builder()
-                        .setModelAssetPath(file.absolutePath)
+                        .setModelAssetPath(model.file.absolutePath)
                         .setDelegate(delegate)
                         .build(),
                 )
@@ -216,6 +247,24 @@ class ObjectDetectSource(
                 // analyzer already hands over one frame at a time with
                 // KEEP_ONLY_LATEST, so a second async queue only adds latency.
                 .setRunningMode(RunningMode.IMAGE)
+                // The allowlist goes into the graph, not into a filter after it,
+                // and that distinction is the whole reason a screwdriver held in
+                // a hand was invisible.
+                //
+                // setMaxResults keeps the top N of *everything the model scored*
+                // and throws the rest away before this code sees any of it. The
+                // fine-tuned model also has `hand` and `person` classes, and a
+                // hand holding a tool is the easiest thing in the frame for it
+                // to be sure about -- so hand, person, laptop and mouse filled
+                // all four slots and the screwdriver, ranked fifth, never
+                // arrived. Filtering afterwards cannot recover a detection that
+                // was already discarded.
+                //
+                // Told the allowlist, MediaPipe scores only these categories and
+                // the slots belong to them.
+                .apply {
+                    if (allowlist) model.labels?.let { setCategoryAllowlist(it.toList()) }
+                }
                 .setMaxResults(maxResults)
                 .build(),
         )

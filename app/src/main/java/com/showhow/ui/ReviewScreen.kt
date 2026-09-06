@@ -2,7 +2,6 @@ package com.showhow.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -29,7 +29,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -65,7 +64,7 @@ fun ReviewScreen(vm: ShowHowViewModel, guideId: String) {
 
     val g = guide
     if (g == null || g.steps.isEmpty()) {
-        Column(Modifier.fillMaxSize().background(Ink.bg).padding(24.dp)) {
+        Column(Modifier.fillMaxSize().padding(24.dp)) {
             Text("Nothing was cut from that take.", color = Ink.text)
             Spacer(Modifier.height(8.dp))
             Text(
@@ -78,7 +77,7 @@ fun ReviewScreen(vm: ShowHowViewModel, guideId: String) {
         return
     }
 
-    Box(Modifier.fillMaxSize().background(Ink.bg)) {
+    Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
             Spacer(Modifier.height(28.dp))
             // The name of the job, and the only place it can be set. It is what
@@ -175,9 +174,7 @@ private fun StepCard(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Ink.card)
-            .border(1.dp, Ink.line, RoundedCornerShape(14.dp))
+            .glass(GlassShapeSmall)
             .padding(14.dp),
     ) {
         Text(
@@ -308,7 +305,7 @@ private fun Thumbnail(folder: File, name: String) {
         if (name.isBlank()) null else decodeUpright(File(folder, name), 8)
     }
     Box(
-        Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)).background(Ink.cardHi),
+        Modifier.size(56.dp).glass(RoundedCornerShape(12.dp), tone = 1.3f),
         contentAlignment = Alignment.Center,
     ) {
         if (bmp != null) {
@@ -335,8 +332,10 @@ private fun JoinDivider(onJoin: () -> Unit) {
         Text(
             "↳ Join",
             Modifier
+                .padding(horizontal = 10.dp)
+                .glass(CircleShape, tone = 1.2f)
                 .clickable(onClick = onJoin)
-                .padding(horizontal = 14.dp, vertical = 4.dp),
+                .padding(horizontal = 14.dp, vertical = 5.dp),
             style = MaterialTheme.typography.labelMedium,
             color = Ink.dim,
         )

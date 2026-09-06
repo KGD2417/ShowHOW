@@ -16,6 +16,10 @@ import androidx.compose.ui.unit.sp
  * middle of the frame. A paper-white app next to a viewfinder is two different
  * exposures fighting each other.
  *
+ * The field is violet rather than neutral black: the app is made of glass
+ * ([Modifier.glass]), and glass over pure grey has nothing to be translucent
+ * *of*. The panes pick up the field behind them, which is the whole effect.
+ *
  * Colour carries meaning here and is not decoration:
  *
  *   [Ink.blue]   an action the user takes
@@ -29,23 +33,42 @@ import androidx.compose.ui.unit.sp
  * never "not allowed" -- there is no disabled control in this app.
  */
 object Ink {
-    val bg = Color(0xFF0B0B0D)
-    val card = Color(0xFF17171A)
-    val cardHi = Color(0xFF202025)
-    val line = Color(0xFF2C2C32)
-    val text = Color(0xFFF4F4F6)
-    val dim = Color(0xFF9B9BA3)
-    val faint = Color(0xFF6C6C74)
+    /** The field. Three values, because [Modifier.aurora] grades between them. */
+    val bg = Color(0xFF0A0715)
+    val bgTop = Color(0xFF161036)
+    val bgDeep = Color(0xFF050409)
 
-    val blue = Color(0xFF2F6BFF)
-    val teal = Color(0xFF14B8A6)
-    val green = Color(0xFF22C55E)
-    val amber = Color(0xFFF59E0B)
-    val red = Color(0xFFEF4444)
+    /** Opaque fallbacks, for the few places that sit over a camera, not the field. */
+    val card = Color(0xFF171132)
+    val cardHi = Color(0xFF241C46)
+
+    /** Hairlines and inert tracks. Translucent, so they read against any pane. */
+    val line = Color(0x2EFFFFFF)
+
+    val text = Color(0xFFF3EFFF)
+    val dim = Color(0xFFA9A1CB)
+    val faint = Color(0xFF6F6791)
+
+    val blue = Color(0xFF7C5CFF)
+    val teal = Color(0xFF35D0C6)
+    val green = Color(0xFF3DDC97)
+    val amber = Color(0xFFF5B33C)
+    val red = Color(0xFFFF5D73)
+
+    /** The light in the room, and the glass it falls on. */
+    val violet = Color(0xFF8B5CF6)
+    val indigo = Color(0xFF5B6BFF)
+    val magenta = Color(0xFFD946EF)
+    val glassTint = Color(0xFF1A1338)
+    val shadow = Color(0xFF06040F)
+
+    /** The orb, hot centre to cool rim. */
+    val orbHot = Color(0xFFFF8FD8)
+    val orbCool = Color(0xFF2B3FD9)
 
     /** Over a viewfinder, so text stays readable on a white laptop lid. */
-    val scrim = Color(0xE60B0B0D)
-    val scrimSoft = Color(0x990B0B0D)
+    val scrim = Color(0xE60A0715)
+    val scrimSoft = Color(0xA60A0715)
 }
 
 /** The telemetry panel and every number that has to line up in a column. */
@@ -53,9 +76,17 @@ val Mono = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHe
 
 private val showHowType = Typography().let { t ->
     t.copy(
-        displaySmall = t.displaySmall.copy(fontWeight = FontWeight.Bold),
-        headlineMedium = t.headlineMedium.copy(fontWeight = FontWeight.Bold),
-        headlineSmall = t.headlineSmall.copy(fontWeight = FontWeight.Bold),
+        // Tighter tracking than Material default: at display sizes the stock
+        // letter spacing reads as a wordmark, not as a headline on glass.
+        displaySmall = t.displaySmall.copy(fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp),
+        headlineMedium = t.headlineMedium.copy(
+            fontWeight = FontWeight.Bold,
+            letterSpacing = (-0.4).sp,
+        ),
+        headlineSmall = t.headlineSmall.copy(
+            fontWeight = FontWeight.Bold,
+            letterSpacing = (-0.3).sp,
+        ),
         titleLarge = t.titleLarge.copy(fontWeight = FontWeight.SemiBold),
         titleMedium = t.titleMedium.copy(fontWeight = FontWeight.SemiBold),
     )
@@ -73,9 +104,10 @@ fun ShowHowTheme(content: @Composable () -> Unit) {
             onPrimary = Color.White,
             secondary = Ink.teal,
             onSecondary = Color.Black,
-            background = Ink.bg,
+            // Transparent, so nothing Material draws paints over the aurora.
+            background = Color.Transparent,
             onBackground = Ink.text,
-            surface = Ink.bg,
+            surface = Color.Transparent,
             onSurface = Ink.text,
             surfaceVariant = Ink.card,
             onSurfaceVariant = Ink.dim,

@@ -15,7 +15,20 @@ data class StepRange(val index: Int, val startMs: Long, val endMs: Long) {
  * and core owes nothing to the AI layer. The ViewModel maps one to the other
  * in a single line.
  */
-data class SpokenWord(val text: String, val startMs: Long)
+data class SpokenWord(
+    val text: String,
+    val startMs: Long,
+    /**
+     * When the word finished, for measuring the silence after it.
+     *
+     * Defaults to [startMs], which is the honest value for a recogniser that
+     * reports no durations -- the gap then reads start-to-start and comes out a
+     * little generous rather than invented. [readable] is the only caller that
+     * needs it; the cutter and the confirmer place words, they do not measure
+     * the space between them.
+     */
+    val endMs: Long = startMs,
+)
 
 /**
  * Second opinion on a candidate cut. The pause detector proposes; this decides

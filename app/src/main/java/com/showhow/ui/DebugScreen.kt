@@ -20,7 +20,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -122,16 +121,16 @@ private fun Meter(label: String, level: Double, gate: Double) {
 
     Text(label, style = MaterialTheme.typography.labelSmall)
     Box(
-        Modifier.fillMaxWidth().height(24.dp).background(Color(0xFF222222)),
+        Modifier.fillMaxWidth().height(24.dp).glass(GlassShapeSmall, tone = 1.2f),
     ) {
         Box(
-            Modifier.fillMaxWidth(frac(level)).height(24.dp).background(Color(0xFF3DDC84)),
+            Modifier.fillMaxWidth(frac(level)).height(24.dp).background(Ink.green),
         )
         Box(
             Modifier.fillMaxWidth(frac(gate)).height(24.dp),
             contentAlignment = Alignment.CenterEnd,
         ) {
-            Box(Modifier.width(2.dp).height(24.dp).background(Color.Red))
+            Box(Modifier.width(2.dp).height(24.dp).background(Ink.red))
         }
     }
 }

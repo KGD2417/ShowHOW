@@ -133,6 +133,17 @@ data class Step(
     val warningSource: Provenance = Provenance.UNKNOWN,
     /** e.g. "speech was unclear here, HANDS works better". Advice, never a gate. */
     val modeHint: String = "",
+    /**
+     * The step in other languages, keyed by language code. Filled on demand.
+     *
+     * A cache and not a second source of truth: [instruction] is the step, and
+     * an entry here is Gemma's rendering of it for the synthetic voice. Written
+     * back into guide.json the first time a learner listens in that language,
+     * so the wait happens once per step and never again.
+     *
+     * Nothing here is ever shown as the expert's words -- see [Provenance].
+     */
+    val translated: Map<String, String> = emptyMap(),
 )
 
 @Serializable

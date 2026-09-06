@@ -1,6 +1,5 @@
 package com.showhow.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,10 +9,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -27,7 +27,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -46,7 +45,7 @@ fun LibraryScreen(vm: ShowHowViewModel) {
     val easy by vm.easyMode.collectAsStateWithLifecycle()
     var settingsOpen by remember { mutableStateOf(false) }
 
-    Box(Modifier.fillMaxSize().background(Ink.bg)) {
+    Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
             Spacer(Modifier.height(28.dp))
             Row(
@@ -56,11 +55,9 @@ fun LibraryScreen(vm: ShowHowViewModel) {
             ) {
                 Text("ShowHow", style = MaterialTheme.typography.headlineMedium, color = Ink.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Pill("✈  No internet")
-                    Spacer(Modifier.height(0.dp))
-                    TextButton(onClick = { settingsOpen = !settingsOpen }) {
-                        Text("⚙", color = Ink.dim, style = MaterialTheme.typography.titleLarge)
-                    }
+                    Pill("✈  No internet", color = Ink.text)
+                    Spacer(Modifier.width(8.dp))
+                    GlassPill("⚙", onClick = { settingsOpen = !settingsOpen }, color = Ink.dim)
                 }
             }
 
@@ -109,8 +106,7 @@ private fun GuideCard(g: Guide, bytes: Long, onOpen: () -> Unit, onDelete: () ->
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Ink.card)
+            .glass(GlassShape)
             .clickable(onClick = onOpen)
             .padding(18.dp),
     ) {
@@ -133,7 +129,10 @@ private fun GuideCard(g: Guide, bytes: Long, onOpen: () -> Unit, onDelete: () ->
         // good it is. A draft is still worth opening; it just has nobody's name
         // on it yet.
         Text(
-            if (g.verified) "verified by the expert" else "draft - not checked yet",
+            if (g.verified) "✓  verified by the expert" else "◦  draft - not checked yet",
+            Modifier
+                .glass(CircleShape, tone = 1.25f)
+                .padding(horizontal = 10.dp, vertical = 5.dp),
             style = MaterialTheme.typography.labelMedium,
             color = if (g.verified) Ink.green else Ink.amber,
         )
@@ -170,8 +169,7 @@ private fun SettingsPanel(easy: Boolean, onEasy: (Boolean) -> Unit, onDebug: () 
         Modifier
             .fillMaxWidth()
             .padding(top = 12.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(Ink.card)
+            .glass(GlassShape)
             .padding(16.dp),
     ) {
         Row(

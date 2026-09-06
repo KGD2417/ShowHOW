@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -75,9 +76,8 @@ fun ShowScreen(vm: ShowHowViewModel) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Row(
                 Modifier
-                    .clip(CircleShape)
-                    .background(Ink.scrim)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .glass(CircleShape, tone = 2.4f)
+                    .padding(horizontal = 14.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
@@ -121,7 +121,8 @@ fun ShowScreen(vm: ShowHowViewModel) {
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Ink.scrimSoft)
+                .padding(12.dp)
+                .glass(RoundedCornerShape(28.dp), tone = 2.6f)
                 .padding(20.dp),
         ) {
             StepDots(
@@ -226,8 +227,10 @@ private fun LanguagePicker(available: List<String>, current: String, onPick: (St
                 NAMES[code] ?: code,
                 Modifier
                     .padding(end = 8.dp)
-                    .clip(CircleShape)
-                    .background(if (here) Ink.blue else Ink.cardHi)
+                    .then(
+                        if (here) Modifier.glassAccent(Ink.blue, CircleShape, elevation = 12.dp)
+                        else Modifier.glass(CircleShape, tone = 1.2f),
+                    )
                     .clickable { onPick(code) }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 color = if (here) Color.White else Ink.dim,

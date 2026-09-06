@@ -71,6 +71,39 @@ data class Policy(
      */
     val detectMinScoreCoco: Float = 0.50f,
 
+    /**
+     * Floors for individual labels, overriding their model's.
+     *
+     * The five screw-head classes sit here because they are the weakest thing
+     * either model does and they misfire on the tool rather than the work: a
+     * `hex_screw` box lands on a philips driver held up to the camera. They
+     * have between 23 and a couple of hundred training images each, against
+     * the bulk of the set behind `screwdriver`, so they are asked to be much
+     * more certain before they may draw. `screwdriver` keeps the model's own
+     * floor, because it is the label this detector exists to produce.
+     *
+     * A map in policy.json, so a class that starts misbehaving in the room can
+     * be raised out of the way without a rebuild.
+     */
+    val detectLabelMinScore: Map<String, Float> = mapOf(
+        // Lowest floor in the app, because this is the label the whole
+        // detector exists to produce and the one a learner is waiting to see.
+        // It can be this low now that the graph allowlist stops `hand` and
+        // `person` taking its result slot -- before that, raising or lowering
+        // it changed nothing, because the detection was being discarded
+        // upstream rather than failing a threshold.
+        "screwdriver" to 0.20f,
+        // The head a laptop actually uses, and the best supported of the five.
+        "philips_screw" to 0.40f,
+        // The other heads exist mostly to tell one driver from another, and
+        // they are the ones that were misfiring on the driver itself.
+        "pozidriv_screw" to 0.50f,
+        "torx_screw" to 0.50f,
+        "hex_screw" to 0.50f,
+        // 23 training images. Treat anything it says as a rumour.
+        "square_screw" to 0.70f,
+    ),
+
     // --- Capture (how often the camera saves a frame while recording) ---
     /**
      * How often a frame is kept while the expert is talking.
@@ -128,6 +161,95 @@ data class Policy(
     val frameDetectionWeight: Double = 0.2,
     /** Boxes needed for full marks on that last term. Past this it says nothing more. */
     val frameDetectionsForFullCredit: Double = 3.0,
+
+    /**
+     * How much a frame gains from the expert naming something over it.
+     *
+     * The largest single weight after sharpness, and deliberately above
+     * [frameDetectionWeight]: "this is the philips screwdriver" is a statement
+     * by the person who does this for a living, while a box is a guess by a
+     * model that has never seen most of their toolbox. When the two disagree
+     * about which frame shows the work, the human wins.
+     *
+     * Sharpness still outranks it, because a blurred photograph of the right
+     * moment helps nobody.
+     */
+    val frameSpokenWeight: Double = 0.45,
+
+    /**
+     * How far from a frame a word still counts as being about it, either side.
+     *
+     * Two and a half seconds, against a snap every two: someone holds a tool up
+     * for a beat before naming it and a beat after, so the frames worth keeping
+     * straddle the phrase rather than land on it. Too narrow and the naming
+     * falls between two snaps and credits neither.
+     */
+    val frameSpokenWindowMs: Long = 2500,
+
+    /** Named things needed for full marks. One is already the moment. */
+    val frameNamedForFullCredit: Double = 1.0,
+
+    /**
+     * The words this job turns on, which a general recogniser splits or blurs.
+     *
+     * Every one of these is already in the shipped Vosk model's 368k-word
+     * vocabulary -- the model can say "screwdriver", it just often prefers the
+     * likelier "screw driver". [correctDomainTokens] puts them back; see its
+     * KDoc for why the rules are as timid as they are.
+     *
+     * In policy.json so a different trade is a file push. Adding a word here
+     * costs nothing; adding a *short* one costs nothing either, because the
+     * corrector will only ever join or exact-match it, never guess at it.
+     */
+    val domainWords: List<String> = listOf(
+        "screwdriver",
+        "screwdrivers",
+        "unscrew",
+        "clockwise",
+        "counterclockwise",
+        "anticlockwise",
+        "laptop",
+        "keyboard",
+        "panel",
+        "screw",
+        "screws",
+        "philips",
+        "phillips",
+        "torx",
+        "spudger",
+        "motherboard",
+        "heatsink",
+        "battery",
+    ),
+
+    /**
+     * Sounds that are never content, removed before a learner reads the step.
+     *
+     * Hesitations only. **"like", "so", "actually", "right", "basically" and
+     * "well" are deliberately absent**, and adding them here is a decision to
+     * make with a take in your ears: every one is a real word in a real
+     * instruction -- "turn it *like* this", "*so* it sits flat", "*right* up
+     * against the frame" -- and stripping them deletes meaning from the guide
+     * in a way nobody reading the result could detect.
+     *
+     * English only. Vosk returns Devanagari for Hindi and its hesitations do
+     * not transliterate to these, so a Hindi take is left alone rather than
+     * half-cleaned.
+     */
+    val fillerWords: List<String> = listOf(
+        "um", "umm", "uhm", "uh", "uhh", "erm", "er",
+        "hmm", "hm", "mmm", "mm", "mhm", "ah", "eh", "huh",
+    ),
+
+    /**
+     * The silence that ends a sentence inside a step.
+     *
+     * Well under [pauseMs], which ends a whole step: a speaker draws a longer
+     * breath between tasks than between sentences, and this has to fit inside
+     * that. Set it at or above [pauseMs] and every step becomes one sentence,
+     * because any gap big enough to break a sentence would already have cut.
+     */
+    val sentenceGapMs: Long = 700,
 
     /**
      * Tools worth telling the coach about when the guide names one.
@@ -236,6 +358,40 @@ data class Policy(
 
     // --- Scene check (advisory: it never disables anything) ---
     /** Below this similarity the Player may say "this doesn't look like the photo". */
+    /**
+     * Whether How mode starts by reading the step aloud rather than playing
+     * the take.
+     *
+     * True, because the rewritten step is a sentence written to be followed --
+     * "flip the laptop over and remove the four screws" -- while the take is
+     * the expert mid-job, with the pauses and the reaching. The learner can
+     * still switch to the expert's own voice in one tap, and should whenever
+     * the recogniser has clearly misheard: that audio is the evidence and it is
+     * always right, where the transcript is only usually right.
+     */
+    val readAloudDefault: Boolean = true,
+
+    /**
+     * How closely the camera must match the step's photograph before the guide
+     * moves on by itself. 0 turns it off and waits for a person.
+     *
+     * 0.60 rather than something stricter because this is not a correctness
+     * check -- [checkCorrectSimilarity] is, at 0.72, and it is the one allowed
+     * to tell a learner they got it right. This only decides when to turn the
+     * page, and turning it a little early costs a tap of the Back button while
+     * never turning it strands someone holding a screwdriver.
+     */
+    val advanceOnMatchSimilarity: Float = 0.60f,
+
+    /**
+     * How long the match has to hold before the page turns.
+     *
+     * A hand passing across the bench can match a photograph for a frame or
+     * two. A step that is actually finished stays finished, so the match has to
+     * survive a second and a half of looking.
+     */
+    val advanceOnMatchDwellMs: Long = 1500,
+
     val sceneAdviseMinSimilarity: Float = 0.55f,
 
     // --- Hand signs ---

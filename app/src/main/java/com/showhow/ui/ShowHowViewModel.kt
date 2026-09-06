@@ -40,8 +40,13 @@ import com.showhow.core.ModeInputs
 import com.showhow.core.CheckInputs
 import com.showhow.core.StepCheck
 import com.showhow.core.checkStep
+import com.showhow.core.correctDomainText
+import com.showhow.core.correctDomainTokens
 import com.showhow.core.correctionEvidence
 import com.showhow.core.mapSnapsToSteps
+import com.showhow.core.namedNear
+import com.showhow.core.plainEnglish
+import com.showhow.core.stripFillers
 import com.showhow.core.pickFrames
 import com.showhow.core.LinkWordConfirmer
 import com.showhow.core.FrameStats
@@ -122,12 +127,22 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             DetectorModel(
                 File(app.filesDir, DETECTOR_MODEL),
                 labels = TOOL_LABELS,
-            ) { policy.value.detectMinScore },
-            DetectorModel(File(app.filesDir, DETECTOR_MODEL_COCO)) {
-                policy.value.detectMinScoreCoco
-            },
+            ) { label -> floorFor(label, policy.value.detectMinScore) },
+            DetectorModel(
+                File(app.filesDir, DETECTOR_MODEL_COCO),
+                labels = COCO_LABELS,
+            ) { label -> floorFor(label, policy.value.detectMinScoreCoco) },
         ),
     )
+
+    /**
+     * The floor for one label: its own if policy names one, else its model's.
+     *
+     * In policy.json rather than in code so a class that starts misfiring on
+     * the bench can be quietened during Red Light, when nobody can compile.
+     */
+    private fun floorFor(label: String, fallback: Float): Float =
+        policy.value.detectLabelMinScore[label] ?: fallback
 
     /**
      * Speech goes to the phone's own recogniser when it has one.
@@ -192,8 +207,16 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
 
     val coachDelegate: String get() = coach.delegateName
 
-    /** Read the step aloud instead of playing the take. Off by default. */
-    private val _readAloud = MutableStateFlow(false)
+    /**
+     * Read the step aloud instead of playing the take.
+     *
+     * On by default now, from [Policy.readAloudDefault]: a learner opening a
+     * guide wants to be told what to do, and the rewritten step is a sentence
+     * written to be followed. The expert's own audio stays one tap away and is
+     * still the evidence -- where the recogniser misheard, that recording is
+     * right and the sentence is confidently wrong.
+     */
+    private val _readAloud = MutableStateFlow(policy.value.readAloudDefault)
     val readAloud: StateFlow<Boolean> = _readAloud.asStateFlow()
 
     fun setReadAloud(on: Boolean) {
@@ -201,9 +224,16 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         if (!on) narrator.stop()
     }
 
-    /** Speak one step. Returns when the phone has finished saying it. */
-    suspend fun speak(text: String) {
-        narrator.speak(text, _lang.value)
+    /**
+     * Speak one step. Returns when the phone has finished saying it.
+     *
+     * @param lang defaults to the guide's language, because a step is the
+     *   expert's own words. The app's own lines -- the coach's answers, the
+     *   nudge to the next step -- pass "en" explicitly: they are written in
+     *   English and a Hindi voice reading English mangles every word.
+     */
+    suspend fun speak(text: String, lang: String = _lang.value) {
+        narrator.speak(text, lang)
     }
 
     fun stopSpeaking() {
@@ -688,7 +718,9 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         liveStream = stream
         pcmJob = viewModelScope.launch(Dispatchers.Default) {
             recorder.pcm.collect { chunk ->
-                stream.feed(chunk)?.let { _liveTranscript.value = it }
+                stream.feed(chunk)?.let {
+                    _liveTranscript.value = correctDomainText(it, policy.value.domainWords)
+                }
             }
         }
     }
@@ -786,6 +818,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         val words = if (timed) {
             runCatching { ai.asr.transcribe(guides.takeFile(id), _lang.value) }
                 .getOrDefault(emptyList())
+                .let { corrected(it, p.domainWords) }
         } else {
             emptyList()
         }
@@ -793,7 +826,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         _buildProgress.value = BuildStage.CUTTING
         val confirmer = LinkWordConfirmer(
             p.linkWords(_lang.value),
-            words.map { SpokenWord(it.text, it.startMs) },
+            words.map { SpokenWord(it.text, it.startMs, it.endMs) },
             p.confirmWindowMs,
             p.confirmMinLinkWords,
         )
@@ -813,7 +846,7 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         // mapSnapsToSteps stays the answer when nothing could be measured: a
         // phone that would not decode its own JPEGs should still produce a
         // guide with pictures in it, chosen the old way, rather than none.
-        val stats = frameStats(id)
+        val stats = frameStats(id, words.map { SpokenWord(it.text, it.startMs, it.endMs) }, p)
         val snaps = if (stats.isEmpty()) {
             mapSnapsToSteps(snapTimesMs.toList(), ranges)
         } else {
@@ -894,20 +927,36 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
      * a frame that cannot be scored cannot be chosen, which is the correct
      * outcome rather than an error.
      */
-    private fun frameStats(id: String): List<FrameStats> =
-        snapTimesMs.mapIndexedNotNull { i, tMs ->
+    private fun frameStats(
+        id: String,
+        spoken: List<SpokenWord>,
+        p: Policy,
+    ): List<FrameStats> {
+        // Everything the expert might name while showing it. The tools they
+        // work with and the parts they work on, from policy.json, so a
+        // different trade needs no rebuild.
+        val named = (p.toolWords + p.domainWords).map { it.lowercase() }.toSet()
+        return snapTimesMs.mapIndexedNotNull { i, tMs ->
             val file = guides.snapFile(id, i)
             if (!file.isFile) return@mapIndexedNotNull null
             val bmp = decodeUpright(file, 4) ?: return@mapIndexedNotNull null
             try {
-                // Detector boxes are evidence that something recognisable is in
-                // shot. It only knows COCO classes, so this is a count and
-                // never a claim about what the thing was.
-                frameStatsOf(bmp, i, tMs, detector.onFrame(bmp, 0).boxes.size)
+                // Two kinds of evidence that this frame is worth showing.
+                //
+                // Boxes: something the detector recognises is in shot. A count
+                // and never a claim about what the thing was.
+                //
+                // Words: the expert named something around this moment. That
+                // covers every tool and part no model on this phone can see,
+                // which on a real bench is most of them.
+                frameStatsOf(bmp, i, tMs, detector.onFrame(bmp, 0).boxes.size).copy(
+                    namedThings = namedNear(tMs, spoken, named, p.frameSpokenWindowMs),
+                )
             } finally {
                 bmp.recycle()
             }
         }
+    }
 
     /**
      * The coach's pass over a freshly cut guide.
@@ -1312,15 +1361,18 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
                 guide = g.copy(title = g.title.ifBlank { jobFrom(g.steps) }),
                 stepIndex = stepIndex,
                 question = question,
-                // COCO labels and nothing else. Empty when the camera is off.
+                // What both detectors are reporting this second -- which now
+                // includes `screwdriver` and the screw heads, not just COCO's
+                // furniture. Empty when the camera is off.
                 seenNow = _detections.value.boxes.map { it.label },
                 toolWords = policy.value.toolWords,
             )
             // With the camera on, the coach is handed a private copy of the
             // frame and can answer about the thing in the learner's hand --
             // which kind of screwdriver it is, whether it matches the screws.
-            // The detector never could: it knows COCO classes and has no label
-            // for one.
+            // The labels above say *that* a screwdriver is in shot; the picture
+            // is what lets the coach say which one, and answer a question no
+            // label list anticipated.
             val frame = frameForCoach()
             val (evidence, text) = try {
                 if (frame != null) coach.see(context, frame) else coach.answer(context)
@@ -1340,6 +1392,79 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
             // with a Hindi voice would mangle every word.
             if (_readAloud.value) narrator.speak(text, "en")
         }
+    }
+
+    // --- listening in another language -------------------------------------
+
+    /**
+     * The language the synthetic voice reads in, which need not be the language
+     * the guide was recorded in.
+     *
+     * Separate from [lang], which is what the *expert spoke* and is a fact about
+     * the recording. This is what the *learner wants to hear* and is a
+     * preference. Conflating them would have a Hindi listener's question
+     * transcribed by the English recogniser.
+     */
+    private val _listenLang = MutableStateFlow("")
+    val listenLang: StateFlow<String> = _listenLang.asStateFlow()
+
+    /** True while Gemma is rendering a step into [listenLang]. */
+    private val _translating = MutableStateFlow(false)
+    val translating: StateFlow<Boolean> = _translating.asStateFlow()
+
+    fun setListenLang(code: String) {
+        if (_listenLang.value == code) return
+        _listenLang.value = code
+        narrator.stop()
+    }
+
+    /**
+     * The step's text in the language the learner is listening in.
+     *
+     * Falls back to [text] whenever anything is missing -- no coach model, a
+     * translation that came back empty, a language nobody asked to translate
+     * into. Falling back to the original is always safe: it is the real step,
+     * just not in their language. Returning nothing would be a silent guide.
+     *
+     * Cached into guide.json on the first pass, so the wait is once per step.
+     *
+     * ponytail: translates the step being read, not the one after it. If the
+     * pause between steps is annoying, prefetch index + 1 here.
+     */
+    suspend fun spokenIn(g: Guide, stepIndex: Int, text: String): String {
+        val want = _listenLang.value
+        val step = g.steps.getOrNull(stepIndex) ?: return text
+        if (want.isBlank() || want == g.lang || text.isBlank()) return text
+        step.translated[want]?.takeIf { it.isNotBlank() }?.let { return it }
+        if (!coach.present) return text
+
+        _translating.value = true
+        val out = try {
+            runCatching { coach.translate(text, want) }.getOrDefault("")
+        } finally {
+            _translating.value = false
+        }
+        if (out.isBlank()) return text
+
+        // Cache it, so this step is instant from now on. A write that fails is
+        // a slower guide, not a broken one.
+        //
+        // Re-read before writing. [g] is the copy the Player screen captured
+        // when it opened, and every step translated after the first would
+        // otherwise be written on top of that same stale snapshot -- so step
+        // two's translation erased step one's, and a five-step guide kept
+        // exactly one. Whatever is on disk now is the base.
+        runCatching {
+            val current = guides.load(g.id) ?: g
+            val updated = current.copy(
+                steps = current.steps.map {
+                    if (it.index == step.index) it.copy(translated = it.translated + (want to out))
+                    else it
+                },
+            )
+            guides.save(updated)
+        }
+        return out
     }
 
     fun clearCoachAnswer() {
@@ -1503,29 +1628,78 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
         val out = File(getApplication<Application>().cacheDir, "slice.wav")
         val slice = guides.sliceTake(guides.takeFile(id), startMs, endMs, out) ?: return ""
         return try {
+            val terms = policy.value.domainWords
             val fromDevice = deviceAsr?.transcribeText(slice, _lang.value).orEmpty()
+            val fillers = policy.value.fillerWords.map { it.lowercase() }.toSet()
             if (fromDevice.isNotBlank()) {
-                fromDevice
+                // No word clocks on this path, so the pauses are not there to
+                // punctuate with. Hesitations still go.
+                stripFillers(correctDomainText(fromDevice, terms), fillers)
             } else {
                 // The system engine said nothing. That is either a quiet step
                 // or an engine that will not take a file, and from here the two
                 // look identical -- so ask the one that always answers rather
                 // than hand back an empty guide.
                 android.util.Log.i(TAG, "system engine returned nothing, falling back to vosk")
-                runCatching { voskAsr.transcribe(slice, _lang.value) }
-                    .getOrDefault(emptyList())
-                    .joinToString(" ") { it.text }
+                stripFillers(
+                    correctDomainText(
+                        runCatching { voskAsr.transcribe(slice, _lang.value) }
+                            .getOrDefault(emptyList())
+                            .joinToString(" ") { it.text },
+                        terms,
+                    ),
+                    fillers,
+                )
             }
         } finally {
             slice.delete()
         }
     }
 
+    /**
+     * The domain corrector over timed words, with the clocks kept intact.
+     *
+     * A merge takes the first word's start and the last word's end, so a step
+     * that ends on "screw driver" still ends where the expert stopped talking.
+     * Confidence takes the lower of the two, because a pair is only as good as
+     * its worse half.
+     */
+    private fun corrected(words: List<Word>, terms: List<String>): List<Word> {
+        if (words.isEmpty() || terms.isEmpty()) return words
+        val fixes = correctDomainTokens(words.map { it.text }, terms)
+        val out = ArrayList<Word>(fixes.size)
+        var i = 0
+        for (fix in fixes) {
+            val first = words[i]
+            val last = words[i + fix.took - 1]
+            out += Word(
+                fix.text,
+                first.startMs,
+                last.endMs,
+                minOf(first.confidence, last.confidence),
+            )
+            i += fix.took
+        }
+        return out
+    }
+
     private fun wordsIn(words: List<Word>, startMs: Long, endMs: Long): List<Word> =
         words.filter { it.startMs >= startMs && it.startMs < endMs }
 
-    private fun transcriptFor(words: List<Word>, startMs: Long, endMs: Long): String =
-        wordsIn(words, startMs, endMs).joinToString(" ") { it.text }
+    /**
+     * The step's words, as English rather than as recogniser output.
+     *
+     * Hesitations out, sentences in, using the pauses the expert actually left.
+     * Nothing is added and no word is changed -- see [plainEnglish].
+     */
+    private fun transcriptFor(words: List<Word>, startMs: Long, endMs: Long): String {
+        val p = policy.value
+        return plainEnglish(
+            wordsIn(words, startMs, endMs).map { SpokenWord(it.text, it.startMs, it.endMs) },
+            p.fillerWords.map { it.lowercase() }.toSet(),
+            p.sentenceGapMs,
+        )
+    }
 
     private fun meanConfidence(words: List<Word>): Float =
         if (words.isEmpty()) 1f else words.map { it.confidence }.average().toFloat()
@@ -1607,6 +1781,32 @@ class ShowHowViewModel(app: Application) : AndroidViewModel(app) {
          * are COCO's to answer and this list is deliberately shorter than the
          * model's own vocabulary. Grow it only when the model earns a class.
          */
+        /**
+         * What COCO is believed for, which is the room and nothing in a hand.
+         *
+         * Unrestricted, COCO calls a screwdriver "scissors" -- it has no
+         * screwdriver class, scissors is the nearest elongated metal thing it
+         * knows, and it says so at a confidence that clears any sane floor. It
+         * does the same with knife, remote and toothbrush. None of those are
+         * ever the subject of a laptop repair, and the fine-tuned model owns
+         * everything held in a hand, so COCO is asked only about the furniture.
+         *
+         * **`person` is not here either.** A demonstrator's own arm is the
+         * largest, easiest thing in almost every frame of this app, and COCO
+         * boxed it at 0.7-plus across half the viewfinder -- competing with the
+         * tool for a result slot and for the eye. Nobody watching a repair guide
+         * needs to be told there is a person in it, and the hands are already
+         * tracked properly by the gesture recognizer, which returns landmarks
+         * rather than a rectangle over everything.
+         */
+        val COCO_LABELS = setOf(
+            "laptop",
+            "keyboard",
+            "mouse",
+            "tv",
+            "cell phone",
+        )
+
         val TOOL_LABELS = setOf(
             "screwdriver",
             "philips_screw",

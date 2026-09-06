@@ -34,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
@@ -54,6 +55,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.showhow.ai.AnswerEvidence
 import com.showhow.ai.Gesture
 import com.showhow.capture.CameraController
+import com.showhow.core.DwellLatch
 import com.showhow.core.Mode
 import com.showhow.core.StepCheck
 import com.showhow.data.Guide
@@ -93,6 +95,8 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     val detections by vm.detections.collectAsStateWithLifecycle()
     val policy by vm.policy.collectAsStateWithLifecycle()
     val readAloud by vm.readAloud.collectAsStateWithLifecycle()
+    val listenLang by vm.listenLang.collectAsStateWithLifecycle()
+    val translating by vm.translating.collectAsStateWithLifecycle()
 
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var index by remember { mutableIntStateOf(0) }
@@ -160,18 +164,53 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
         .ifBlank { step.caption }
         .ifBlank { step.title }
 
-    LaunchedEffect(step.startMs, guideId, readAloud) {
+    LaunchedEffect(step.startMs, guideId, readAloud, listenLang) {
         if (readAloud) {
             // The synthetic voice reads what the recogniser heard. Where it
             // misheard, the expert's own audio is one tap away and still right.
             player.pause()
-            vm.speak(spoken)
+            // In the learner's language when they asked for one, and in the
+            // expert's when they did not. spokenIn falls back to the original
+            // on any failure, so this is never silent.
+            val heard = vm.spokenIn(guide, index, spoken)
+            vm.speak(heard, listenLang.ifBlank { guide.lang })
         } else {
             vm.stopSpeaking()
             playStep(player, vm.guides.dir(guideId), vm.guides.takeFile(guideId), step)
         }
     }
     DisposableEffect(Unit) { onDispose { vm.stopSpeaking() } }
+
+    // Does the bench in front of the learner look like the photograph of this
+    // step finished? Latched, so a hand passing across it is not a page turn.
+    val matchLatch = remember(guideId) { DwellLatch<Boolean>(policy.advanceOnMatchDwellMs) }
+    var advancedOn by remember { mutableStateOf(-1L) }
+    LaunchedEffect(step.startMs, holding, asking, index) {
+        matchLatch.reset()
+        // Never on the last step: there is nowhere to go, and a guide that
+        // announces itself finished while the learner is still working is
+        // worse than one that waits.
+        if (policy.advanceOnMatchSimilarity <= 0f || index >= guide.steps.lastIndex) return@LaunchedEffect
+        while (true) {
+            // Held is the learner saying "wait", and the ask sheet is them
+            // mid-question. Neither is a moment to turn the page.
+            if (!holding && !asking) {
+                val matched = vm.sceneSimilarity.value >= policy.advanceOnMatchSimilarity
+                val fired = matchLatch.update(
+                    android.os.SystemClock.elapsedRealtime(),
+                    if (matched) true else null,
+                )
+                if (fired != null && advancedOn != step.startMs) {
+                    advancedOn = step.startMs
+                    // Said in English: it is the app talking, not the expert.
+                    vm.speak(MOVING_ON, "en")
+                    goTo(index + 1)
+                    return@LaunchedEffect
+                }
+            }
+            delay(150)
+        }
+    }
 
     // Playback position, and the pause after it before the next step.
     var progress by remember { mutableStateOf(0f) }
@@ -204,7 +243,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
     val big = mode == Mode.TALK || mode == Mode.EASY
     val accent = if (mode == Mode.TALK) Ink.teal else Ink.blue
 
-    Box(Modifier.fillMaxSize().background(Ink.bg)) {
+    Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             Spacer(Modifier.height(22.dp))
             Row(
@@ -218,12 +257,12 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                     color = Ink.dim,
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (cameraOn) {
-                        Text("▣ ", color = Ink.green, style = MaterialTheme.typography.labelMedium)
-                    }
                     Text(
-                        mode.name,
-                        Modifier.clickable { cameraOn = !cameraOn },
+                        if (cameraOn) "▣  " + mode.name else mode.name,
+                        Modifier
+                            .glass(CircleShape, tone = 1.25f)
+                            .clickable { cameraOn = !cameraOn }
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
                         color = if (cameraOn) Ink.green else Ink.teal,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
@@ -246,7 +285,7 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                     Modifier
                         .fillMaxWidth()
                         .aspectRatio(4f / 3f)
-                        .clip(RoundedCornerShape(12.dp))
+                        .glassFrame(24.dp)
                         .background(Color.Black),
                 ) {
                     if (cameraOn) {
@@ -323,7 +362,10 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                 AudioBar(
                     label = when {
                         holding -> "Held"
+                        translating -> "Putting it into ${LISTEN_NAMES[listenLang] ?: listenLang}"
                         advanceInMs > 0 -> "Next step in ${(advanceInMs / 1000) + 1}s"
+                        similarity >= policy.advanceOnMatchSimilarity -> "That looks right"
+
                         readAloud -> "Reading it out"
                         else -> "Playing your recording"
                     },
@@ -333,15 +375,30 @@ fun PlayerScreen(vm: ShowHowViewModel, guideId: String) {
                     position = "${index + 1} / ${guide.steps.size}",
                     accent = accent,
                     holding = holding,
+                    listenLang = listenLang.ifBlank { guide.lang },
+                    onCycleListenLang = {
+                        val order = LISTEN_NAMES.keys.toList()
+                        val now = listenLang.ifBlank { guide.lang }
+                        vm.setListenLang(order[(order.indexOf(now) + 1) % order.size])
+                    },
                     onAgain = {
-                        if (readAloud) scope.launch { vm.speak(spoken) }
+                        if (readAloud) scope.launch {
+                            vm.speak(vm.spokenIn(guide, index, spoken), listenLang.ifBlank { guide.lang })
+                        }
                         else playStep(player, vm.guides.dir(guideId), vm.guides.takeFile(guideId), step)
                     },
                     onHold = {
                         holding = !holding
                         if (holding) player.pause() else player.play()
                     },
-                    onAsk = { asking = true },
+                    // One press: the sheet opens and the mic is already
+                    // hot, because the learner's spare hand is holding a
+                    // screwdriver and every extra tap is one they have to put
+                    // it down for.
+                    onAsk = {
+                        asking = true
+                        vm.startListening()
+                    },
                 )
             }
 
@@ -381,8 +438,7 @@ private fun GoalInset(photo: File) {
         Modifier
             .padding(10.dp)
             .width(120.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .border(1.dp, Ink.line, RoundedCornerShape(8.dp)),
+            .glassFrame(14.dp, elevation = 12.dp),
     ) {
         Image(
             bmp.asImageBitmap(),
@@ -426,9 +482,8 @@ private fun CameraOffBanner(onTurnOn: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(Ink.card)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .glass(GlassShapeSmall, tone = 0.9f)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
@@ -454,6 +509,8 @@ private fun AudioBar(
     accent: Color,
     holding: Boolean,
     readAloud: Boolean,
+    listenLang: String,
+    onCycleListenLang: () -> Unit,
     onAgain: () -> Unit,
     onHold: () -> Unit,
     onAsk: () -> Unit,
@@ -462,9 +519,8 @@ private fun AudioBar(
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Ink.card)
-            .padding(14.dp),
+            .glass(RoundedCornerShape(26.dp), tone = 1.15f)
+            .padding(16.dp),
     ) {
         Row(
             Modifier.fillMaxWidth(),
@@ -481,18 +537,39 @@ private fun AudioBar(
                     color = accent,
                     style = MaterialTheme.typography.labelMedium,
                 )
+                // Only while the phone is doing the talking. Against the
+                // expert's own recording the choice is meaningless -- that
+                // audio is in the language it was spoken in and stays there.
+                if (readAloud) {
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        LISTEN_NAMES[listenLang] ?: listenLang,
+                        Modifier
+                            .glass(CircleShape, tone = 1.3f)
+                            .clickable(onClick = onCycleListenLang)
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        color = Ink.text,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
                 Spacer(Modifier.width(12.dp))
                 Text(position, style = Mono, color = Ink.dim)
             }
         }
         Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(Ink.line)) {
+        Box(Modifier.fillMaxWidth().height(5.dp).clip(CircleShape).background(Ink.line)) {
             Box(
                 Modifier
                     .fillMaxWidth(progress.coerceIn(0f, 1f))
-                    .height(4.dp)
+                    .height(5.dp)
                     .clip(CircleShape)
-                    .background(accent),
+                    // Lit at the head, so the bar reads as filling rather than
+                    // as a block that happens to be a certain width.
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(accent.copy(alpha = 0.55f), accent, Ink.magenta),
+                        ),
+                    ),
             )
         }
         Spacer(Modifier.height(14.dp))
@@ -500,9 +577,9 @@ private fun AudioBar(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            RoundAction("↺", "Again", Ink.card, onAgain)
+            RoundAction("↺", "Again", null, onAgain)
             RoundAction(if (holding) "▶" else "❚❚", if (holding) "Play" else "Hold", accent, onHold)
-            RoundAction("?", "Ask", Ink.card, onAsk)
+            RoundAction("?", "Ask", null, onAsk)
         }
     }
 }
@@ -512,18 +589,19 @@ private fun AudioBar(
  * wet or gloved hands, and a 48dp target is a miss for them.
  */
 @Composable
-private fun RoundAction(glyph: String, label: String, fill: Color, onClick: () -> Unit) {
+private fun RoundAction(glyph: String, label: String, fill: Color?, onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier
                 .size(64.dp)
-                .clip(CircleShape)
-                .background(fill)
-                .border(1.dp, if (fill == Ink.card) Ink.line else Color.Transparent, CircleShape)
+                .then(
+                    if (fill != null) Modifier.glassAccent(fill, CircleShape, elevation = 16.dp)
+                    else Modifier.glass(CircleShape, tone = 1.25f),
+                )
                 .clickable(onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
-            Text(glyph, color = if (fill == Ink.card) Ink.text else Color.White, fontSize = 20.sp)
+            Text(glyph, color = if (fill == null) Ink.text else Color.White, fontSize = 20.sp)
         }
         Spacer(Modifier.height(6.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = Ink.dim)
@@ -539,7 +617,11 @@ private fun RoundAction(glyph: String, label: String, fill: Color, onClick: () -
 @Composable
 private fun ReasonBar(mode: Mode, reason: String) {
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp)
+            .glass(CircleShape, tone = 0.75f)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -599,8 +681,10 @@ private fun AskSheet(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                .background(Ink.card)
+                .glass(
+                    RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+                    tone = 1.9f,
+                )
                 .padding(20.dp),
         ) {
             Text(
@@ -623,8 +707,8 @@ private fun AskSheet(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .border(1.5.dp, if (listening) Ink.green else Ink.blue, RoundedCornerShape(10.dp))
+                    .glass(GlassShapeSmall, tone = 1.2f)
+                    .border(1.5.dp, if (listening) Ink.green else Ink.blue, GlassShapeSmall)
                     .padding(14.dp),
             ) {
                 BasicTextField(
@@ -674,8 +758,8 @@ private fun AskSheet(
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .border(1.dp, evidenceColour(a.evidence), RoundedCornerShape(10.dp))
+                        .glass(GlassShapeSmall, tone = 1.15f)
+                        .border(1.dp, evidenceColour(a.evidence), GlassShapeSmall)
                         .padding(14.dp),
                 ) {
                     Text(
@@ -744,7 +828,7 @@ private fun evidenceColour(e: AnswerEvidence): Color = when (e) {
 
 @Composable
 private fun MissingGuide(guideId: String, onBack: () -> Unit) {
-    Column(Modifier.fillMaxSize().background(Ink.bg).padding(24.dp)) {
+    Column(Modifier.fillMaxSize().padding(24.dp)) {
         Text("Nothing to play in $guideId.", color = Ink.text)
         TextButton(onClick = onBack) { Text("Library", color = Ink.blue) }
     }
@@ -775,3 +859,21 @@ private fun playStep(player: ExoPlayer, folder: File, take: File, step: Step) {
     player.prepare()
     player.play()
 }
+
+/**
+ * What the app says when the bench matches the step's photograph.
+ *
+ * Short on purpose: the learner has their hands in a laptop and is not
+ * listening to a sentence. The next step's narration follows immediately.
+ */
+private const val MOVING_ON = "Great. Next step."
+
+/**
+ * The languages the synthetic voice will read a step in, and what to call them.
+ *
+ * The guide's own language is always in here, so cycling always comes home. A
+ * language whose offline voice is not installed simply says nothing when
+ * selected -- DeviceNarrator refuses network voices -- which is why the chip
+ * shows what it is about to try rather than hiding the choice.
+ */
+private val LISTEN_NAMES = linkedMapOf("en" to "English", "hi" to "हिंदी")

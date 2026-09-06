@@ -405,6 +405,78 @@ class Coach(
         put a screwdriver into a board on the strength of it.
         """.trimIndent()
 
+    /**
+     * One step, in another language, for the synthetic voice to read.
+     *
+     * The same model that rewrote the step does the translation, which is why
+     * this needs no new library and no download: Gemma is multilingual and is
+     * already on the phone at a gigabyte a copy. A dedicated Indic model would
+     * translate Hindi better -- IndicTrans2 is built for exactly this -- at the
+     * cost of a second native runtime in an app that already fights over
+     * `libc++_shared.so`. If the Hindi comes back stilted, that is the upgrade.
+     *
+     * **The expert's own audio is never touched.** It cannot be: a translated
+     * recording is no longer evidence that a person did this job, and evidence
+     * is the thing this app is built to keep. Only the written step crosses
+     * languages, only the synthetic voice reads it, and the original recording
+     * stays one tap away in the language it was spoken in.
+     *
+     * @return the translation, or "" -- an empty string means the caller shows
+     *   the original rather than a guess, the same as everywhere else here.
+     */
+    suspend fun translate(text: String, lang: String): String {
+        if (text.isBlank()) return ""
+        val language = LANGUAGE_NAMES[lang.take(2).lowercase()] ?: return ""
+        val out = generate(
+            """
+            Translate the repair instruction below into $language.
+
+            Rules:
+            - Output only the translation. No preamble, no notes, no original.
+            - Keep it one or two short sentences, the way a person speaks.
+            - Keep tool and part names a technician would recognise. If the
+              $language word is not the one used on a workbench, keep the
+              English word rather than inventing a formal one.
+            - Do not add a step, a warning or an explanation that is not there.
+
+            Instruction:
+            $text
+            """.trimIndent(),
+        ).trim()
+        // A model that echoes the prompt or answers in English has not
+        // translated anything, and reading the English back in a Hindi voice is
+        // worse than staying in English.
+        if (out.equals(text, ignoreCase = true)) return ""
+        return dropRepeats(out)
+    }
+
+    /**
+     * Strip a sentence the model said twice in a row.
+     *
+     * A 2B model asked for one short sentence will sometimes give it, then give
+     * it again with "now" on the front -- observed on the bench as "सर्जिकल
+     * स्टेप पूरा हुआ। अब सर्जिकल स्टेप पूरा हुआ।". Spoken aloud that is a guide
+     * that stutters, and a learner cannot tell whether it means two things.
+     *
+     * Consecutive duplicates only, compared without the leading connective, so
+     * a step that legitimately repeats a word survives.
+     */
+    private fun dropRepeats(text: String): String {
+        val parts = text.split(SENTENCE_END).map { it.trim() }.filter { it.isNotBlank() }
+        if (parts.size < 2) return text
+        val kept = ArrayList<String>(parts.size)
+        for (part in parts) {
+            val bare = part.removePrefix("अब").removePrefix("Now").trim().lowercase()
+            val last = kept.lastOrNull()
+                ?.removePrefix("अब")?.removePrefix("Now")?.trim()?.lowercase()
+            if (bare.isNotEmpty() && bare == last) continue
+            kept += part
+        }
+        // Devanagari full stop, because the bulk of what this handles is Hindi
+        // and a Latin period there reads as a typo.
+        return kept.joinToString(SENTENCE_JOIN) + SENTENCE_JOIN.trim()
+    }
+
     private suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
         val engine = engine() ?: return@withContext ""
         val started = System.currentTimeMillis()
@@ -478,6 +550,18 @@ class Coach(
     }
 
     companion object {
+        /** Devanagari danda or a Latin full stop, either of which ends one. */
+        private val SENTENCE_END = Regex("[।.!?]+")
+
+        private const val SENTENCE_JOIN = "। "
+
+        /** What to call each language in a prompt. The keys are guide langs. */
+        private val LANGUAGE_NAMES = mapOf(
+            "hi" to "Hindi, written in Devanagari",
+            "mr" to "Marathi, written in Devanagari",
+            "en" to "English",
+        )
+
         private const val TAG = "Coach"
 
         /** Path under filesDir. Gitignored, so expect it to be missing. */

@@ -1,0 +1,55 @@
+{
+  "id": "sample-backpanel",
+  "title": "Open a Windows laptop back panel",
+  "lang": "hi",
+  "createdAt": 0,
+  "verifiedAt": 0,
+  "steps": [
+    {
+      "index": 0,
+      "instruction": "Undo the two screws at the bottom of the back panel",
+      "instructionSource": "EXPERT",
+      "transcript": "neeche ke do screw khol do",
+      "boxes": [
+        {"label": "screw", "score": 0.68, "left": 0.34, "top": 0.58, "right": 0.42, "bottom": 0.66}
+      ]
+    },
+    {
+      "index": 1,
+      "instruction": "Lift the back panel off the laptop",
+      "instructionSource": "EXPERT",
+      "warning": "Careful, don't pull it by the ribbon cable",
+      "warningSource": "EXPERT"
+    },
+    {
+      "index": 2,
+      "instruction": "Anyway that is enough about warranties",
+      "aside": true
+    },
+    {
+      "index": 3,
+      "instruction": "Pull the old RAM module out of its slot",
+      "instructionSource": "EXPERT"
+    },
+    {
+      "index": 4,
+      "instruction": "Insert the new RAM module at an angle",
+      "instructionSource": "EXPERT"
+    },
+    {
+      "index": 5,
+      "instruction": "Press it down until the clips snap",
+      "instructionSource": "EXPERT"
+    },
+    {
+      "index": 6,
+      "instruction": "Refit the panel and screw it back in clockwise",
+      "instructionSource": "EXPERT"
+    },
+    {
+      "index": 7,
+      "instruction": "Check that the panel sits flat",
+      "instructionSource": "GENERAL"
+    }
+  ]
+}

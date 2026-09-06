@@ -24,7 +24,50 @@ data class FrameStats(
     val meanLuma: Double,
     val dHash: Long,
     val detections: Int,
+    /**
+     * How many things the expert named out loud around this moment.
+     *
+     * Defaulted, because a frame nobody was talking over is a normal frame and
+     * every existing caller predates this.
+     */
+    val namedThings: Int = 0,
 )
+
+/**
+ * How many of [terms] the expert spoke within [windowMs] of [tMs].
+ *
+ * This is the answer to the detector's biggest limitation, and it costs no
+ * model at all. The detector knows six tools and six pieces of furniture; an
+ * expert's bench has forty things on it, and the moment that matters -- holding
+ * one up to the lens and saying what it is -- produces no box, so the frame
+ * picker scored it the same as a frame of an empty table.
+ *
+ * But the expert *said the word*. A person naming a thing while showing it is
+ * better evidence of what is being demonstrated than any classifier on this
+ * phone, it needs no training data, and it works for a part no dataset covers.
+ * So the words become a third kind of evidence beside sharpness and lateness.
+ *
+ * Counted, not merely flagged, because "the philips screwdriver" names two
+ * terms and is more certainly the moment than a passing "screw".
+ *
+ * ponytail: exact token match, which is why the domain corrector runs first --
+ * "screw driver" has already become "screwdriver" by the time this sees it.
+ * Stemming is the upgrade if plurals start slipping through.
+ */
+fun namedNear(
+    tMs: Long,
+    spoken: List<SpokenWord>,
+    terms: Set<String>,
+    windowMs: Long,
+): Int {
+    if (spoken.isEmpty() || terms.isEmpty() || windowMs <= 0) return 0
+    return spoken.count { w ->
+        kotlin.math.abs(w.startMs - tMs) <= windowMs && w.text.lowercase().trim(*EDGES) in terms
+    }
+}
+
+/** Punctuation a recogniser may leave on a word. Vosk does not, others do. */
+private val EDGES = charArrayOf('.', ',', '!', '?', ';', ':', '"', '\'')
 
 /**
  * One photograph per step, or none.
@@ -112,7 +155,12 @@ private fun score(f: FrameStats, r: StepRange, p: Policy): Double {
     // Past a few boxes the detector is not telling us anything more about
     // whether the frame is worth looking at.
     val evidence = (f.detections.toDouble() / p.frameDetectionsForFullCredit).coerceIn(0.0, 1.0)
+    // What the expert said they were showing. Weighted above the detector on
+    // purpose: a named thing is a claim by the person who did the job, a box is
+    // a guess by a model that has never seen most of their toolbox.
+    val named = (f.namedThings.toDouble() / p.frameNamedForFullCredit).coerceIn(0.0, 1.0)
     return p.frameSharpnessWeight * f.sharpness +
         p.frameLatenessWeight * lateness +
-        p.frameDetectionWeight * evidence
+        p.frameDetectionWeight * evidence +
+        p.frameSpokenWeight * named
 }

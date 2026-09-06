@@ -1,7 +1,7 @@
 package com.showhow.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,27 +35,55 @@ import android.graphics.ImageDecoder
 import com.showhow.ai.Detections
 import java.io.File
 
-/** The rounded chip the header rows are made of. */
+/** The rounded chip the header rows are made of. Glass, like everything else. */
 @Composable
 fun Pill(
     text: String,
     modifier: Modifier = Modifier,
     color: Color = Ink.dim,
-    background: Color = Ink.cardHi,
+    tone: Float = 1.15f,
 ) {
     Text(
         text,
         modifier
-            .clip(CircleShape)
-            .background(background)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .glass(CircleShape, tone = tone)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
         color = color,
         style = MaterialTheme.typography.labelMedium,
     )
 }
 
+/** A pill that is a control. Same glass, plus a press. */
+@Composable
+fun GlassPill(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    color: Color = Ink.text,
+    accent: Color? = null,
+    tone: Float = 1.15f,
+) {
+    val shape = CircleShape
+    Text(
+        text,
+        modifier
+            .then(
+                if (accent != null) Modifier.glassAccent(accent, shape, elevation = 12.dp)
+                else Modifier.glass(shape, tone = tone),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+        color = if (accent != null) Color.White else color,
+        style = MaterialTheme.typography.labelLarge,
+    )
+}
+
 /**
  * The one wide action at the bottom of a screen.
+ *
+ * Not a Material Button: a Button paints a flat container colour over its own
+ * modifier, which is exactly the surface this look replaces. A Box that is
+ * glass and clickable is the same control with the right skin.
  *
  * There is no `enabled` parameter and there will not be one. A control the user
  * cannot press is the app refusing to explain itself; if pressing it is a bad
@@ -71,32 +97,40 @@ fun WideButton(
     color: Color = Ink.blue,
     onColor: Color = Color.White,
 ) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(60.dp),
-        shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = color, contentColor = onColor),
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(62.dp)
+            .glassAccent(color, ButtonShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(text, style = MaterialTheme.typography.titleMedium, fontSize = 18.sp)
+        Text(text, style = MaterialTheme.typography.titleMedium, fontSize = 18.sp, color = onColor)
     }
 }
 
-/** Same shape, quieter: the second choice in a pair. */
+/** Same shape, quieter: the second choice in a pair. Clear glass, no colour. */
 @Composable
 fun GhostButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.height(60.dp),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Ink.line),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Color.Transparent,
-            contentColor = Ink.text,
-        ),
+    Box(
+        modifier
+            .height(62.dp)
+            .glass(ButtonShape, tone = 1.1f)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(text, style = MaterialTheme.typography.titleMedium, fontSize = 18.sp)
+        Text(
+            text,
+            Modifier.padding(horizontal = 20.dp),
+            style = MaterialTheme.typography.titleMedium,
+            fontSize = 18.sp,
+            color = Ink.text,
+        )
     }
 }
+
+/** Wide enough to read as a lozenge, tight enough to still be a button. */
+private val ButtonShape = RoundedCornerShape(20.dp)
 
 /**
  * The step timeline. Filled circles for steps that exist, green for the one
@@ -116,25 +150,19 @@ fun StepDots(count: Int, current: Int, modifier: Modifier = Modifier, total: Int
             Box(
                 Modifier
                     .size(if (here) 34.dp else 28.dp)
-                    .clip(CircleShape)
-                    .background(
+                    .then(
                         when {
-                            here -> Ink.green
-                            done -> Ink.cardHi
-                            else -> Color.Transparent
+                            here -> Modifier.glassAccent(Ink.green, CircleShape, elevation = 12.dp)
+                            done -> Modifier.glass(CircleShape, tone = 1.3f)
+                            else -> Modifier.glass(CircleShape, tone = 0.55f)
                         },
-                    )
-                    .border(
-                        1.dp,
-                        if (done || here) Color.Transparent else Ink.line,
-                        CircleShape,
                     ),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     "${i + 1}",
                     color = when {
-                        here -> Color.Black
+                        here -> Color.White
                         done -> Ink.text
                         else -> Ink.faint
                     },
@@ -258,9 +286,8 @@ data class TelemetryRow(val value: String, val label: String, val delegate: Stri
 fun Telemetry(rows: List<TelemetryRow>, modifier: Modifier = Modifier) {
     Column(
         modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(Ink.scrim)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .glass(RoundedCornerShape(14.dp), tone = 2.4f)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.End,
     ) {
         for (r in rows) {

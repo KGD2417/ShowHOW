@@ -227,8 +227,22 @@ class VoskAsr(private val modelsDir: File) : Asr, AutoCloseable {
         /** Where the models are unzipped on the phone. Gitignored, never committed. */
         const val MODELS_DIR = "models"
 
-        /** What the picker offers, in the order it shows them. */
-        val LANGUAGES = listOf("en", "hi", "mr")
+        /**
+         * What the picker offers, in the order it shows them.
+         *
+         * **Marathi is not here, and cannot be.** Vosk publishes no Marathi
+         * model at any size -- the list runs small-hi, hi, and stops -- and the
+         * system engine on the demo phone does not transcribe files in any
+         * language. So `mr` was a button that recorded a take and returned an
+         * empty transcript, which is the exact failure this app is built to
+         * refuse. Adding it back needs a model on the phone first, not a line
+         * here.
+         *
+         * Reading a guide already recorded as `mr` still works: the Narrator,
+         * the linking words and the library label all keep their Marathi cases.
+         * Only the offer to record a new one is gone.
+         */
+        val LANGUAGES = listOf("en", "hi")
 
         fun normalize(lang: String): String = lang.take(2).lowercase()
 
